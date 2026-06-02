@@ -21,8 +21,8 @@ const navItems = [
       <div class="brand">
         <div class="brand-mark">语</div>
         <div>
-          <strong>语音输入助手</strong>
-          <span>Voice Assistant</span>
+          <strong>说文</strong>
+          <span>saynow</span>
         </div>
       </div>
       <nav class="nav-list">

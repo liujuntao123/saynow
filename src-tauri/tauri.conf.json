@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Voice Input Assistant",
+  "productName": "saynow",
   "version": "0.1.0",
   "identifier": "com.voiceinput.assistant",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "语音输入助手",
+        "title": "说文",
         "width": 1180,
         "height": 760,
         "minWidth": 960,

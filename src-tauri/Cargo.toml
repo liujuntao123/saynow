@@ -1,8 +1,8 @@
 [package]
-name = "voice-input-assistant"
+name = "saynow"
 version = "0.1.0"
-description = "Windows voice input assistant"
-authors = ["voice-input-assistant"]
+description = "saynow Windows speech recognition tool"
+authors = ["saynow"]
 edition = "2021"
 
 [lib]

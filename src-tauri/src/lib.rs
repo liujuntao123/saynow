@@ -10,7 +10,7 @@ pub mod stats;
 pub fn run() {
     let db_path = std::env::current_dir()
         .expect("failed to read current dir")
-        .join("voice-input-assistant.sqlite");
+        .join("saynow.sqlite");
     let db = db::AppDb::open(&db_path).expect("failed to open app database");
 
     tauri::Builder::default()

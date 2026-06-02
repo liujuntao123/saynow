@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "语音输入助手",
+  "productName": "Voice Input Assistant",
   "version": "0.1.0",
   "identifier": "com.voiceinput.assistant",
   "build": {

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/voice-input-assistant.sqlite
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example

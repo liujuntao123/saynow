@@ -1,0 +1,24 @@
+{
+  "name": "voice-input-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "vue": "^3.5.25"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.5",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4",
+    "vitest": "^4.0.15",
+    "vue-tsc": "^3.1.8"
+  }
+}

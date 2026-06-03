@@ -23,5 +23,5 @@ tauri = { version = "2.9.5", features = [], optional = true }
 thiserror = "2.0.17"
 
 [features]
-default = []
+default = ["desktop"]
 desktop = ["tauri"]

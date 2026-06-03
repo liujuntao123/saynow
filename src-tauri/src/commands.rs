@@ -47,12 +47,32 @@ pub fn add_vocabulary_data(db: &AppDb, item: VocabularyItem) -> Result<Vec<Vocab
     list_vocabulary_data(db)
 }
 
+pub fn add_vocabulary_terms_data(db: &AppDb, terms: Vec<String>) -> Result<Vec<VocabularyItem>, String> {
+    db.add_vocabulary_terms(&terms).map_err(|error| error.to_string())?;
+    list_vocabulary_data(db)
+}
+
+pub fn delete_vocabulary_data(db: &AppDb, id: i64) -> Result<Vec<VocabularyItem>, String> {
+    db.delete_vocabulary(id).map_err(|error| error.to_string())?;
+    list_vocabulary_data(db)
+}
+
 pub fn list_style_prompts_data(db: &AppDb) -> Result<Vec<StylePrompt>, String> {
     db.list_style_prompts().map_err(|error| error.to_string())
 }
 
 pub fn add_style_prompt_data(db: &AppDb, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
     db.add_style_prompt(&item).map_err(|error| error.to_string())?;
+    list_style_prompts_data(db)
+}
+
+pub fn update_style_prompt_data(db: &AppDb, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
+    db.update_style_prompt(&item).map_err(|error| error.to_string())?;
+    list_style_prompts_data(db)
+}
+
+pub fn delete_style_prompt_data(db: &AppDb, id: i64) -> Result<Vec<StylePrompt>, String> {
+    db.delete_style_prompt(id).map_err(|error| error.to_string())?;
     list_style_prompts_data(db)
 }
 
@@ -112,6 +132,16 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub fn add_vocabulary_terms(db: State<'_, AppDb>, terms: Vec<String>) -> Result<Vec<VocabularyItem>, String> {
+        add_vocabulary_terms_data(&db, terms)
+    }
+
+    #[tauri::command]
+    pub fn delete_vocabulary(db: State<'_, AppDb>, id: i64) -> Result<Vec<VocabularyItem>, String> {
+        delete_vocabulary_data(&db, id)
+    }
+
+    #[tauri::command]
     pub fn list_style_prompts(db: State<'_, AppDb>) -> Result<Vec<StylePrompt>, String> {
         list_style_prompts_data(&db)
     }
@@ -119,6 +149,16 @@ mod tauri_commands {
     #[tauri::command]
     pub fn add_style_prompt(db: State<'_, AppDb>, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
         add_style_prompt_data(&db, item)
+    }
+
+    #[tauri::command]
+    pub fn update_style_prompt(db: State<'_, AppDb>, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
+        update_style_prompt_data(&db, item)
+    }
+
+    #[tauri::command]
+    pub fn delete_style_prompt(db: State<'_, AppDb>, id: i64) -> Result<Vec<StylePrompt>, String> {
+        delete_style_prompt_data(&db, id)
     }
 
     #[tauri::command]
@@ -134,8 +174,12 @@ mod tauri_commands {
             list_records,
             list_vocabulary,
             add_vocabulary,
+            add_vocabulary_terms,
+            delete_vocabulary,
             list_style_prompts,
             add_style_prompt,
+            update_style_prompt,
+            delete_style_prompt,
             simulate_recognition
         ])
     }
@@ -158,5 +202,35 @@ mod tests {
         assert_eq!(record.status, RecognitionStatus::Success);
         assert_eq!(dashboard.stats.total_records, 1);
         assert_eq!(dashboard.records[0].text, record.text);
+    }
+
+    #[test]
+    fn commands_manage_vocabulary_and_style_prompts() {
+        let db = AppDb::in_memory().unwrap();
+
+        let vocabulary = add_vocabulary_terms_data(&db, vec!["Qwen".to_string(), "MiMo".to_string()]).unwrap();
+        assert_eq!(vocabulary.len(), 2);
+
+        let vocabulary = delete_vocabulary_data(&db, vocabulary[0].id).unwrap();
+        assert_eq!(vocabulary.len(), 1);
+
+        let styles = add_style_prompt_data(
+            &db,
+            StylePrompt {
+                id: 0,
+                name: "书面语".to_string(),
+                prompt: "整理为书面语".to_string(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let mut style = styles[0].clone();
+        style.enabled = false;
+
+        let styles = update_style_prompt_data(&db, style).unwrap();
+        assert!(!styles[0].enabled);
+
+        let styles = delete_style_prompt_data(&db, styles[0].id).unwrap();
+        assert!(styles.is_empty());
     }
 }

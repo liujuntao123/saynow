@@ -40,6 +40,7 @@ let demoVocabulary: VocabularyItem[] = [
 let demoStyles: StylePrompt[] = [
   { id: 1, name: '书面语', prompt: '将口语整理为简洁书面语，保留原意。', enabled: true },
 ];
+let nextDemoStyleId = Date.now();
 
 function demoStats() {
   const successful = demoRecords.filter((record) => record.status === 'success');
@@ -89,6 +90,22 @@ export async function addVocabulary(item: VocabularyItem): Promise<VocabularyIte
   return demoVocabulary;
 }
 
+export async function addVocabularyTerms(terms: string[]): Promise<VocabularyItem[]> {
+  if (isTauri) return invoke('add_vocabulary_terms', { terms });
+  const items = terms
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .map((term, index) => ({ id: Date.now() + index, term, alias: '', category: '', note: '', enabled: true }));
+  demoVocabulary = [...items, ...demoVocabulary];
+  return demoVocabulary;
+}
+
+export async function deleteVocabulary(id: number): Promise<VocabularyItem[]> {
+  if (isTauri) return invoke('delete_vocabulary', { id });
+  demoVocabulary = demoVocabulary.filter((item) => item.id !== id);
+  return demoVocabulary;
+}
+
 export async function listStylePrompts(): Promise<StylePrompt[]> {
   if (isTauri) return invoke('list_style_prompts');
   return demoStyles;
@@ -96,8 +113,30 @@ export async function listStylePrompts(): Promise<StylePrompt[]> {
 
 export async function addStylePrompt(item: StylePrompt): Promise<StylePrompt[]> {
   if (isTauri) return invoke('add_style_prompt', { item });
-  demoStyles = [{ ...item, id: Date.now() }, ...demoStyles];
+  const created = { ...item, id: nextDemoStyleId++ };
+  demoStyles = normalizeStylePrompts([created, ...demoStyles], created.enabled ? created.id : undefined);
   return demoStyles;
+}
+
+export async function updateStylePrompt(item: StylePrompt): Promise<StylePrompt[]> {
+  if (isTauri) return invoke('update_style_prompt', { item });
+  demoStyles = demoStyles.map((style) => (style.id === item.id ? item : style));
+  demoStyles = normalizeStylePrompts(demoStyles, item.enabled ? item.id : undefined);
+  return demoStyles;
+}
+
+export async function deleteStylePrompt(id: number): Promise<StylePrompt[]> {
+  if (isTauri) return invoke('delete_style_prompt', { id });
+  demoStyles = demoStyles.filter((item) => item.id !== id);
+  return demoStyles;
+}
+
+function normalizeStylePrompts(items: StylePrompt[], activeId?: number): StylePrompt[] {
+  const fallbackActiveId = activeId ?? items.find((item) => item.enabled)?.id;
+  return items.map((item) => ({
+    ...item,
+    enabled: fallbackActiveId !== undefined && item.id === fallbackActiveId,
+  }));
 }
 
 export async function simulateRecognition(): Promise<RecognitionRecord> {

@@ -1,6 +1,10 @@
 <script setup lang="ts">
+import AppIcon from '../components/AppIcon.vue';
+import EmptyState from '../components/EmptyState.vue';
 import MetricCard from '../components/MetricCard.vue';
+import PageHeader from '../components/PageHeader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import UiPanel from '../components/UiPanel.vue';
 import type { DashboardData } from '../types';
 
 defineProps<{
@@ -21,29 +25,35 @@ function formatDuration(seconds = 0) {
 
 <template>
   <div class="page-stack">
-    <header class="page-header">
-      <div>
-        <h1>首页</h1>
-        <p>{{ dashboard?.platform.message ?? '正在读取本地状态' }}</p>
-      </div>
-      <button class="primary-button" type="button" :disabled="busy" @click="emit('simulate')">
-        {{ busy ? '识别中' : '模拟一次识别' }}
-      </button>
-    </header>
+    <PageHeader title="首页" :subtitle="dashboard?.platform.message" icon="mic">
+      <template #actions>
+        <button class="primary-button icon-button" type="button" :disabled="busy" @click="emit('simulate')">
+          <AppIcon :name="busy ? 'activity' : 'mic'" />
+          {{ busy ? '识别中' : '模拟识别' }}
+        </button>
+      </template>
+    </PageHeader>
 
-    <section class="metrics-grid">
-      <MetricCard label="总识别时长" :value="formatDuration(dashboard?.stats.totalDurationSeconds)" hint="成功识别记录累计" />
-      <MetricCard label="语音条数" :value="dashboard?.stats.totalRecords ?? 0" hint="失败记录不计入统计" />
-      <MetricCard label="转换字数" :value="dashboard?.stats.totalCharacters ?? 0" hint="按 Unicode 字符统计" />
-      <MetricCard label="今日状态" value="就绪" hint="按住快捷键开始语音输入" />
+    <section class="home-summary-grid">
+      <UiPanel class="ready-panel">
+        <div class="ready-orb" aria-hidden="true">
+          <span></span>
+        </div>
+        <div>
+          <span class="eyebrow">今日状态</span>
+          <h2>就绪</h2>
+        </div>
+      </UiPanel>
+
+      <div class="metrics-grid">
+        <MetricCard icon="clock" label="总识别时长" :value="formatDuration(dashboard?.stats.totalDurationSeconds)" />
+        <MetricCard icon="activity" label="语音条数" :value="dashboard?.stats.totalRecords ?? 0" />
+        <MetricCard icon="text" label="转换字数" :value="dashboard?.stats.totalCharacters ?? 0" />
+      </div>
     </section>
 
-    <section class="content-section">
-      <div class="section-title">
-        <h2>最近识别记录</h2>
-        <span>{{ dashboard?.records.length ?? 0 }} 条</span>
-      </div>
-      <div class="records-table">
+    <UiPanel title="最近识别记录" :meta="`${dashboard?.records.length ?? 0} 条`" icon="fileText" flush>
+      <div v-if="dashboard?.records.length" class="records-table home-records-table">
         <div class="table-row table-head">
           <span>时间</span>
           <span>内容</span>
@@ -59,6 +69,7 @@ function formatDuration(seconds = 0) {
           <StatusBadge :status="record.status" />
         </div>
       </div>
-    </section>
+      <EmptyState v-else icon="fileText" title="暂无识别记录" description="完成语音输入后显示。" />
+    </UiPanel>
   </div>
 </template>

@@ -3,7 +3,9 @@ import { computed, onMounted, ref } from 'vue';
 import AppShell from './components/AppShell.vue';
 import {
   addStylePrompt,
-  addVocabulary,
+  addVocabularyTerms,
+  deleteStylePrompt,
+  deleteVocabulary,
   getConfig,
   getDashboard,
   listRecords,
@@ -11,6 +13,7 @@ import {
   listVocabulary,
   saveConfig,
   simulateRecognition,
+  updateStylePrompt,
 } from './api/tauri';
 import ConfigPage from './pages/ConfigPage.vue';
 import DataPage from './pages/DataPage.vue';
@@ -57,13 +60,28 @@ async function persistConfig(nextConfig: AppConfig) {
   }
 }
 
-async function createVocabulary(item: VocabularyItem) {
-  vocabulary.value = await addVocabulary(item);
+async function createVocabularyTerms(terms: string[]) {
+  vocabulary.value = await addVocabularyTerms(terms);
+  await refreshAll();
+}
+
+async function removeVocabulary(id: number) {
+  vocabulary.value = await deleteVocabulary(id);
   await refreshAll();
 }
 
 async function createStyle(item: StylePrompt) {
   styles.value = await addStylePrompt(item);
+  await refreshAll();
+}
+
+async function saveStyle(item: StylePrompt) {
+  styles.value = await updateStylePrompt(item);
+  await refreshAll();
+}
+
+async function removeStyle(id: number) {
+  styles.value = await deleteStylePrompt(id);
   await refreshAll();
 }
 
@@ -79,8 +97,11 @@ onMounted(refreshAll);
       :records="records"
       :vocabulary="vocabulary"
       :styles="styles"
-      @add-vocabulary="createVocabulary"
+      @add-vocabulary-terms="createVocabularyTerms"
+      @delete-vocabulary="removeVocabulary"
       @add-style="createStyle"
+      @update-style="saveStyle"
+      @delete-style="removeStyle"
     />
     <FeedbackPage v-else />
   </AppShell>

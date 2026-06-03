@@ -11,7 +11,7 @@ pub fn current_platform_status() -> PlatformStatus {
     if cfg!(target_os = "windows") {
         PlatformStatus {
             supported: true,
-            message: "Windows platform features are available.".to_string(),
+            message: String::new(),
         }
     } else {
         PlatformStatus {

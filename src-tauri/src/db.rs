@@ -204,6 +204,30 @@ impl AppDb {
         Ok(())
     }
 
+    pub fn add_vocabulary_terms(&self, terms: &[String]) -> Result<()> {
+        let mut conn = self.conn.lock().expect("database mutex poisoned");
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO vocabulary (term, alias, category, note, enabled) VALUES (?1, '', '', '', 1)",
+            )?;
+            for term in terms {
+                let normalized = term.trim();
+                if !normalized.is_empty() {
+                    stmt.execute([normalized])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_vocabulary(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM vocabulary WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn list_style_prompts(&self) -> Result<Vec<StylePrompt>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn.prepare("SELECT id, name, prompt, enabled FROM style_prompts ORDER BY id DESC")?;
@@ -223,6 +247,61 @@ impl AppDb {
         conn.execute(
             "INSERT INTO style_prompts (name, prompt, enabled) VALUES (?1, ?2, ?3)",
             params![item.name, item.prompt, if item.enabled { 1 } else { 0 }],
+        )?;
+        let id = conn.last_insert_rowid();
+        if item.enabled {
+            conn.execute("UPDATE style_prompts SET enabled = 0 WHERE id != ?1", [id])?;
+        } else {
+            Self::normalize_enabled_style_prompts(&conn)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_style_prompt(&self, item: &StylePrompt) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE style_prompts SET name = ?1, prompt = ?2, enabled = ?3 WHERE id = ?4",
+            params![
+                item.name,
+                item.prompt,
+                if item.enabled { 1 } else { 0 },
+                item.id
+            ],
+        )?;
+        if item.enabled && changed > 0 {
+            conn.execute(
+                "UPDATE style_prompts SET enabled = 0 WHERE id != ?1",
+                [item.id],
+            )?;
+        } else {
+            Self::normalize_enabled_style_prompts(&conn)?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_style_prompt(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM style_prompts WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    fn normalize_enabled_style_prompts(conn: &Connection) -> Result<()> {
+        conn.execute(
+            r#"
+            UPDATE style_prompts
+            SET enabled = CASE
+                WHEN id = (
+                    SELECT id
+                    FROM style_prompts
+                    WHERE enabled = 1
+                    ORDER BY id DESC
+                    LIMIT 1
+                ) THEN 1
+                ELSE 0
+            END
+            WHERE enabled = 1
+            "#,
+            [],
         )?;
         Ok(())
     }
@@ -266,5 +345,77 @@ mod tests {
         assert_eq!(db.list_records(10).unwrap()[0].text, "识别文本");
         assert_eq!(db.list_vocabulary().unwrap()[0].term, "Qwen");
         assert_eq!(db.list_style_prompts().unwrap()[0].name, "书面语");
+    }
+
+    #[test]
+    fn manages_batch_vocabulary_and_style_prompt_changes() {
+        let db = AppDb::in_memory().unwrap();
+
+        db.add_vocabulary_terms(&[
+            "Qwen".to_string(),
+            "  ".to_string(),
+            "MiMo".to_string(),
+        ])
+        .unwrap();
+
+        let vocabulary = db.list_vocabulary().unwrap();
+        assert_eq!(vocabulary.len(), 2);
+        assert_eq!(vocabulary[0].term, "MiMo");
+
+        db.delete_vocabulary(vocabulary[0].id).unwrap();
+        assert_eq!(db.list_vocabulary().unwrap().len(), 1);
+
+        db.add_style_prompt(&StylePrompt {
+            id: 0,
+            name: "书面语".to_string(),
+            prompt: "整理为书面语".to_string(),
+            enabled: true,
+        })
+        .unwrap();
+
+        let mut style = db.list_style_prompts().unwrap()[0].clone();
+        style.name = "会议纪要".to_string();
+        style.prompt = "整理为会议纪要".to_string();
+        style.enabled = false;
+        db.update_style_prompt(&style).unwrap();
+
+        let updated = db.list_style_prompts().unwrap()[0].clone();
+        assert_eq!(updated.name, "会议纪要");
+        assert!(!updated.enabled);
+
+        db.delete_style_prompt(updated.id).unwrap();
+        assert!(db.list_style_prompts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn keeps_at_most_one_style_prompt_enabled() {
+        let db = AppDb::in_memory().unwrap();
+
+        db.add_style_prompt(&StylePrompt {
+            id: 0,
+            name: "书面语".to_string(),
+            prompt: "整理为书面语".to_string(),
+            enabled: true,
+        })
+        .unwrap();
+        db.add_style_prompt(&StylePrompt {
+            id: 0,
+            name: "会议纪要".to_string(),
+            prompt: "整理为会议纪要".to_string(),
+            enabled: true,
+        })
+        .unwrap();
+
+        let styles = db.list_style_prompts().unwrap();
+        let enabled: Vec<_> = styles.iter().filter(|style| style.enabled).collect();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].name, "会议纪要");
+
+        let mut style = enabled[0].clone();
+        style.enabled = false;
+        db.update_style_prompt(&style).unwrap();
+
+        let styles = db.list_style_prompts().unwrap();
+        assert!(styles.iter().all(|style| !style.enabled));
     }
 }

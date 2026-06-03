@@ -1,15 +1,21 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue';
+
 defineProps<{
   label: string;
   value: string | number;
-  hint: string;
+  hint?: string;
+  icon?: string;
 }>();
 </script>
 
 <template>
   <section class="metric-card">
-    <span>{{ label }}</span>
+    <span v-if="icon" class="metric-icon">
+      <AppIcon :name="icon" />
+    </span>
+    <span class="metric-label">{{ label }}</span>
     <strong>{{ value }}</strong>
-    <small>{{ hint }}</small>
+    <small v-if="hint">{{ hint }}</small>
   </section>
 </template>

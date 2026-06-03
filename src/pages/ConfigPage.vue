@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue';
+import { reactive, ref, watch } from 'vue';
+import AppIcon from '../components/AppIcon.vue';
+import PageHeader from '../components/PageHeader.vue';
+import UiPanel from '../components/UiPanel.vue';
 import type { AppConfig } from '../types';
 
 const props = defineProps<{
@@ -18,6 +21,7 @@ const form = reactive<AppConfig>({
   apiKeyRef: 'credential-manager:mimo',
   hotkey: 'Ctrl+Space',
 });
+const recordingHotkey = ref(false);
 
 watch(
   () => props.config,
@@ -40,53 +44,104 @@ function applyTemplate(template: (typeof templates)[number]) {
     apiKeyRef: template.apiKeyRef,
   });
 }
+
+function isSelectedTemplate(template: (typeof templates)[number]) {
+  return form.provider === template.provider && form.baseUrl === template.baseUrl && form.model === template.model;
+}
+
+function normalizeKey(key: string) {
+  if (key === ' ') return 'Space';
+  if (key.length === 1) return key.toUpperCase();
+  return key.replace(/^Arrow/, '');
+}
+
+function recordHotkey(event: KeyboardEvent) {
+  if (!recordingHotkey.value) return;
+  event.preventDefault();
+
+  if (event.key === 'Escape') {
+    recordingHotkey.value = false;
+    return;
+  }
+
+  const key = normalizeKey(event.key);
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) return;
+
+  const parts = [
+    event.ctrlKey ? 'Ctrl' : '',
+    event.altKey ? 'Alt' : '',
+    event.shiftKey ? 'Shift' : '',
+    event.metaKey ? 'Meta' : '',
+    key,
+  ].filter(Boolean);
+
+  form.hotkey = parts.join('+');
+  recordingHotkey.value = false;
+}
 </script>
 
 <template>
   <div class="page-stack">
-    <header class="page-header">
-      <div>
-        <h1>配置</h1>
-        <p>配置模型供应商、模型 ID、API Key 安全存储引用和语音识别快捷键。</p>
-      </div>
-      <button class="primary-button" type="button" :disabled="saving" @click="emit('save', { ...form })">
-        {{ saving ? '保存中' : '保存配置' }}
-      </button>
-    </header>
+    <PageHeader title="配置" icon="settings">
+      <template #actions>
+        <button class="primary-button icon-button" type="button" :disabled="saving" @click="emit('save', { ...form })">
+          <AppIcon :name="saving ? 'activity' : 'save'" />
+          {{ saving ? '保存中' : '保存配置' }}
+        </button>
+      </template>
+    </PageHeader>
 
-    <section class="content-section">
-      <div class="section-title">
-        <h2>模型模板</h2>
-      </div>
+    <UiPanel title="供应商配置" icon="layers">
       <div class="template-row">
-        <button v-for="template in templates" :key="template.label" class="template-button" type="button" @click="applyTemplate(template)">
+        <button
+          v-for="template in templates"
+          :key="template.label"
+          class="template-button"
+          :class="{ selected: isSelectedTemplate(template) }"
+          type="button"
+          @click="applyTemplate(template)"
+        >
+          <span class="template-radio" aria-hidden="true"></span>
           <strong>{{ template.label }}</strong>
           <span>{{ template.baseUrl }}</span>
         </button>
       </div>
-    </section>
+      <div class="form-grid provider-grid">
+        <label>
+          供应商
+          <input v-model="form.provider" />
+        </label>
+        <label>
+          模型
+          <input v-model="form.model" />
+        </label>
+        <label class="field-span-2">
+          Base URL
+          <input v-model="form.baseUrl" />
+        </label>
+        <label class="field-span-2">
+          API Key 安全存储引用
+          <input v-model="form.apiKeyRef" />
+        </label>
+      </div>
+    </UiPanel>
 
-    <section class="form-grid">
-      <label>
-        供应商
-        <input v-model="form.provider" />
-      </label>
-      <label>
-        Base URL
-        <input v-model="form.baseUrl" />
-      </label>
-      <label>
-        模型
-        <input v-model="form.model" />
-      </label>
-      <label>
-        API Key 安全存储引用
-        <input v-model="form.apiKeyRef" />
-      </label>
-      <label>
-        语音识别快捷键
-        <input v-model="form.hotkey" />
-      </label>
-    </section>
+    <UiPanel title="快捷键" icon="keyboard">
+      <div class="hotkey-recorder" :class="{ recording: recordingHotkey }" tabindex="0" @keydown="recordHotkey">
+        <span>{{ recordingHotkey ? '请按下快捷键组合' : form.hotkey || '未设置' }}</span>
+        <div class="hotkey-actions">
+          <button class="secondary-button icon-button" type="button" @click="recordingHotkey = true">
+            <AppIcon name="keyboard" />
+            录制
+          </button>
+          <button class="ghost-button icon-only-button" type="button" aria-label="清除快捷键" title="清除" @click="form.hotkey = ''">
+            <AppIcon name="trash" />
+          </button>
+          <button v-if="recordingHotkey" class="ghost-button icon-only-button" type="button" aria-label="取消录制" title="取消" @click="recordingHotkey = false">
+            <AppIcon name="x" />
+          </button>
+        </div>
+      </div>
+    </UiPanel>
   </div>
 </template>

@@ -67,6 +67,8 @@ pub fn run() {
 
 #[cfg(feature = "desktop")]
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();

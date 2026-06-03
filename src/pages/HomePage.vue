@@ -10,6 +10,7 @@ import type { DashboardData } from '../types';
 defineProps<{
   dashboard: DashboardData | null;
   busy: boolean;
+  recording: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -27,9 +28,9 @@ function formatDuration(seconds = 0) {
   <div class="page-stack">
     <PageHeader title="首页" :subtitle="dashboard?.platform.message" icon="mic">
       <template #actions>
-        <button class="primary-button icon-button" type="button" :disabled="busy" @click="emit('simulate')">
-          <AppIcon :name="busy ? 'activity' : 'mic'" />
-          {{ busy ? '识别中' : '模拟识别' }}
+        <button class="primary-button icon-button" type="button" :disabled="busy || recording" @click="emit('simulate')">
+          <AppIcon :name="busy || recording ? 'activity' : 'mic'" />
+          {{ recording ? '录音中' : busy ? '识别中' : '模拟识别' }}
         </button>
       </template>
     </PageHeader>

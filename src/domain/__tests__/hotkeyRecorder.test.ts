@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatHotkey } from '../hotkeyRecorder';
+import { createHoldHotkeyController, formatHotkey, isModifierOnlyHotkey } from '../hotkeyRecorder';
 
 function keyEvent(input: Partial<KeyboardEvent>): KeyboardEvent {
   return input as KeyboardEvent;
@@ -12,12 +12,61 @@ describe('hotkey recorder', () => {
     expect(formatHotkey(keyEvent({ key: 'ArrowLeft', altKey: true }))).toBe('Alt+Left');
   });
 
-  it('ignores modifier-only input until a trigger key is pressed', () => {
-    expect(formatHotkey(keyEvent({ key: 'Control', ctrlKey: true }))).toBeNull();
-    expect(formatHotkey(keyEvent({ key: 'Shift', shiftKey: true }))).toBeNull();
+  it('formats modifier-only input as a valid hotkey', () => {
+    expect(formatHotkey(keyEvent({ key: 'Control', ctrlKey: true }))).toBe('Ctrl');
+    expect(formatHotkey(keyEvent({ key: 'Meta', metaKey: true }))).toBe('Meta');
+  });
+
+  it('detects modifier-only hotkeys', () => {
+    expect(isModifierOnlyHotkey('Ctrl')).toBe(true);
+    expect(isModifierOnlyHotkey('Meta')).toBe(true);
+    expect(isModifierOnlyHotkey('Ctrl+Space')).toBe(false);
   });
 
   it('treats Escape as cancellation instead of a hotkey', () => {
     expect(formatHotkey(keyEvent({ key: 'Escape' }))).toBeNull();
+  });
+
+  it('starts recording on hotkey down and stops recording when the hotkey is released', () => {
+    const actions: string[] = [];
+    const controller = createHoldHotkeyController('Ctrl', {
+      onStart: () => actions.push('start'),
+      onStop: () => actions.push('stop'),
+    });
+
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true, repeat: true }));
+    controller.handleKeyUp(keyEvent({ key: 'Control' }));
+
+    expect(actions).toEqual(['start', 'stop']);
+  });
+
+  it('keeps recording while a combination hotkey is held', () => {
+    const actions: string[] = [];
+    const controller = createHoldHotkeyController('Ctrl+Space', {
+      onStart: () => actions.push('start'),
+      onStop: () => actions.push('stop'),
+    });
+
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true, repeat: true }));
+    controller.handleKeyUp(keyEvent({ key: ' ' }));
+
+    expect(actions).toEqual(['start', 'stop']);
+  });
+
+  it('supports holding a modifier-only combination hotkey', () => {
+    const actions: string[] = [];
+    const controller = createHoldHotkeyController('Ctrl+Shift', {
+      onStart: () => actions.push('start'),
+      onStop: () => actions.push('stop'),
+    });
+
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: 'Shift', ctrlKey: true, shiftKey: true }));
+    controller.handleKeyUp(keyEvent({ key: 'Shift' }));
+
+    expect(actions).toEqual(['start', 'stop']);
   });
 });

@@ -3,7 +3,7 @@ import { onBeforeUnmount, reactive, ref, watch } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import PageHeader from '../components/PageHeader.vue';
 import UiPanel from '../components/UiPanel.vue';
-import { formatHotkey } from '../domain/hotkeyRecorder';
+import { formatHotkey, isModifierOnlyHotkey } from '../domain/hotkeyRecorder';
 import type { AppConfig } from '../types';
 
 const props = defineProps<{
@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   save: [config: AppConfig];
+  hotkeyRecordingChange: [recording: boolean];
 }>();
 
 const form = reactive<AppConfig>({
@@ -23,6 +24,7 @@ const form = reactive<AppConfig>({
   hotkey: 'Ctrl+Space',
 });
 const recordingHotkey = ref(false);
+const pendingModifierHotkey = ref<string | null>(null);
 
 watch(
   () => props.config,
@@ -63,20 +65,42 @@ function recordHotkey(event: KeyboardEvent) {
   const hotkey = formatHotkey(event);
   if (!hotkey) return;
 
+  if (isModifierOnlyHotkey(hotkey)) {
+    pendingModifierHotkey.value = hotkey;
+    return;
+  }
+
   form.hotkey = hotkey;
+  pendingModifierHotkey.value = null;
+  recordingHotkey.value = false;
+}
+
+function finishModifierHotkey(event: KeyboardEvent) {
+  if (!recordingHotkey.value || !pendingModifierHotkey.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  form.hotkey = pendingModifierHotkey.value;
+  pendingModifierHotkey.value = null;
   recordingHotkey.value = false;
 }
 
 watch(recordingHotkey, (recording) => {
+  emit('hotkeyRecordingChange', recording);
+
   if (recording) {
     window.addEventListener('keydown', recordHotkey, true);
+    window.addEventListener('keyup', finishModifierHotkey, true);
   } else {
     window.removeEventListener('keydown', recordHotkey, true);
+    window.removeEventListener('keyup', finishModifierHotkey, true);
+    pendingModifierHotkey.value = null;
   }
 }, { flush: 'sync' });
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', recordHotkey, true);
+  window.removeEventListener('keyup', finishModifierHotkey, true);
 });
 </script>
 

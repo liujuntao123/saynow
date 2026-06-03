@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import AppShell from './components/AppShell.vue';
 import {
   addStylePrompt,
@@ -15,6 +15,7 @@ import {
   simulateRecognition,
   updateStylePrompt,
 } from './api/tauri';
+import { createHoldHotkeyController } from './domain/hotkeyRecorder';
 import ConfigPage from './pages/ConfigPage.vue';
 import DataPage from './pages/DataPage.vue';
 import FeedbackPage from './pages/FeedbackPage.vue';
@@ -29,8 +30,12 @@ const vocabulary = ref<VocabularyItem[]>([]);
 const styles = ref<StylePrompt[]>([]);
 const busy = ref(false);
 const saving = ref(false);
+const hotkeyRecording = ref(false);
+const configuringHotkey = ref(false);
+const holdHotkeyController = shallowRef<ReturnType<typeof createHoldHotkeyController> | null>(null);
 
 const currentPage = computed(() => activePage.value);
+const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
 
 async function refreshAll() {
   dashboard.value = await getDashboard();
@@ -48,6 +53,27 @@ async function runSimulation() {
   } finally {
     busy.value = false;
   }
+}
+
+function startHotkeyRecording() {
+  if (busy.value || hotkeyRecording.value) return;
+  hotkeyRecording.value = true;
+}
+
+async function stopHotkeyRecording() {
+  if (!hotkeyRecording.value) return;
+  hotkeyRecording.value = false;
+  await runSimulation();
+}
+
+function handleRuntimeKeyDown(event: KeyboardEvent) {
+  if (!runtimeHotkeyEnabled.value) return;
+  holdHotkeyController.value?.handleKeyDown(event);
+}
+
+function handleRuntimeKeyUp(event: KeyboardEvent) {
+  if (!runtimeHotkeyEnabled.value) return;
+  holdHotkeyController.value?.handleKeyUp(event);
 }
 
 async function persistConfig(nextConfig: AppConfig) {
@@ -85,13 +111,42 @@ async function removeStyle(id: number) {
   await refreshAll();
 }
 
-onMounted(refreshAll);
+watch(
+  () => config.value?.hotkey,
+  (hotkey) => {
+    holdHotkeyController.value = hotkey
+      ? createHoldHotkeyController(hotkey, {
+          onStart: startHotkeyRecording,
+          onStop: () => {
+            void stopHotkeyRecording();
+          },
+        })
+      : null;
+  },
+);
+
+onMounted(() => {
+  window.addEventListener('keydown', handleRuntimeKeyDown, true);
+  window.addEventListener('keyup', handleRuntimeKeyUp, true);
+  void refreshAll();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleRuntimeKeyDown, true);
+  window.removeEventListener('keyup', handleRuntimeKeyUp, true);
+});
 </script>
 
 <template>
   <AppShell :active-page="activePage" @navigate="activePage = $event">
-    <HomePage v-if="currentPage === 'home'" :dashboard="dashboard" :busy="busy" @simulate="runSimulation" />
-    <ConfigPage v-else-if="currentPage === 'config'" :config="config" :saving="saving" @save="persistConfig" />
+    <HomePage v-if="currentPage === 'home'" :dashboard="dashboard" :busy="busy" :recording="hotkeyRecording" @simulate="runSimulation" />
+    <ConfigPage
+      v-else-if="currentPage === 'config'"
+      :config="config"
+      :saving="saving"
+      @save="persistConfig"
+      @hotkey-recording-change="configuringHotkey = $event"
+    />
     <DataPage
       v-else-if="currentPage === 'data'"
       :records="records"

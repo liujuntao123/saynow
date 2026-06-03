@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue';
+import { onBeforeUnmount, reactive, ref, watch } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import PageHeader from '../components/PageHeader.vue';
 import UiPanel from '../components/UiPanel.vue';
+import { formatHotkey } from '../domain/hotkeyRecorder';
 import type { AppConfig } from '../types';
 
 const props = defineProps<{
@@ -49,35 +50,34 @@ function isSelectedTemplate(template: (typeof templates)[number]) {
   return form.provider === template.provider && form.baseUrl === template.baseUrl && form.model === template.model;
 }
 
-function normalizeKey(key: string) {
-  if (key === ' ') return 'Space';
-  if (key.length === 1) return key.toUpperCase();
-  return key.replace(/^Arrow/, '');
-}
-
 function recordHotkey(event: KeyboardEvent) {
   if (!recordingHotkey.value) return;
   event.preventDefault();
+  event.stopPropagation();
 
   if (event.key === 'Escape') {
     recordingHotkey.value = false;
     return;
   }
 
-  const key = normalizeKey(event.key);
-  if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) return;
+  const hotkey = formatHotkey(event);
+  if (!hotkey) return;
 
-  const parts = [
-    event.ctrlKey ? 'Ctrl' : '',
-    event.altKey ? 'Alt' : '',
-    event.shiftKey ? 'Shift' : '',
-    event.metaKey ? 'Meta' : '',
-    key,
-  ].filter(Boolean);
-
-  form.hotkey = parts.join('+');
+  form.hotkey = hotkey;
   recordingHotkey.value = false;
 }
+
+watch(recordingHotkey, (recording) => {
+  if (recording) {
+    window.addEventListener('keydown', recordHotkey, true);
+  } else {
+    window.removeEventListener('keydown', recordHotkey, true);
+  }
+}, { flush: 'sync' });
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', recordHotkey, true);
+});
 </script>
 
 <template>

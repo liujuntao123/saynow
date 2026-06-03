@@ -22,6 +22,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(db)
         .invoke_handler(commands::handlers())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let menu = MenuBuilder::new(app)
                 .text("show", "显示主窗口")

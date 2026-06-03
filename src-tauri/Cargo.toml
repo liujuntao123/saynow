@@ -15,13 +15,17 @@ tauri-build = { version = "2.5.1", features = [] }
 [dependencies]
 anyhow = "1.0.100"
 chrono = { version = "0.4.42", features = ["serde"] }
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tauri = { version = "2.9.5", features = ["tray-icon"], optional = true }
+tauri-plugin-global-shortcut = { version = "2.3.2", optional = true }
 thiserror = "2.0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["desktop"]
-desktop = ["tauri"]
+desktop = ["tauri", "tauri-plugin-global-shortcut"]

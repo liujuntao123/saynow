@@ -10,7 +10,12 @@ pub struct ProviderConfig {
     pub api_key_ref: String,
 }
 
-pub fn build_openai_compatible_payload(model: &str, prompt: &str, audio_base64: &str) -> Value {
+pub fn build_openai_compatible_payload(
+    model: &str,
+    prompt: &str,
+    audio_base64: &str,
+    audio_format: &str,
+) -> Value {
     json!({
         "model": model,
         "messages": [
@@ -26,7 +31,7 @@ pub fn build_openai_compatible_payload(model: &str, prompt: &str, audio_base64: 
                         "type": "input_audio",
                         "input_audio": {
                             "data": audio_base64,
-                            "format": "wav"
+                            "format": audio_format
                         }
                     }
                 ]
@@ -51,11 +56,14 @@ mod tests {
 
     #[test]
     fn builds_payload_with_model_prompt_and_audio() {
-        let payload = build_openai_compatible_payload("mimo-v2.5", "prompt", "AAA");
+        let payload = build_openai_compatible_payload("mimo-v2.5", "prompt", "AAA", "wav");
 
         assert_eq!(payload["model"], "mimo-v2.5");
         assert_eq!(payload["messages"][0]["content"], "prompt");
-        assert_eq!(payload["messages"][1]["content"][1]["input_audio"]["data"], "AAA");
+        assert_eq!(
+            payload["messages"][1]["content"][1]["input_audio"]["data"],
+            "AAA"
+        );
     }
 
     #[test]

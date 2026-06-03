@@ -27,7 +27,9 @@ pub fn build_prompt_context(
 
     let history = records
         .iter()
-        .filter(|record| record.status == RecognitionStatus::Success && !record.text.trim().is_empty())
+        .filter(|record| {
+            record.status == RecognitionStatus::Success && !record.text.trim().is_empty()
+        })
         .take(5)
         .map(|record| format!("- {}", record.text.trim()))
         .collect::<Vec<_>>()

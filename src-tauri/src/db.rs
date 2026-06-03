@@ -139,7 +139,22 @@ impl AppDb {
         Ok(())
     }
 
-    pub fn insert_record(&self, text: &str, duration_seconds: u32, status: RecognitionStatus) -> Result<()> {
+    pub fn insert_record(
+        &self,
+        text: &str,
+        duration_seconds: u32,
+        status: RecognitionStatus,
+    ) -> Result<()> {
+        self.insert_record_with_error(text, duration_seconds, status, None)
+    }
+
+    pub fn insert_record_with_error(
+        &self,
+        text: &str,
+        duration_seconds: u32,
+        status: RecognitionStatus,
+        error_message: Option<&str>,
+    ) -> Result<()> {
         let config = self.get_config()?;
         let status_text = match status {
             RecognitionStatus::Success => "success",
@@ -148,8 +163,16 @@ impl AppDb {
         };
         let conn = self.conn.lock().expect("database mutex poisoned");
         conn.execute(
-            "INSERT INTO recognition_records (created_at, duration_seconds, text, provider, model, status, error_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-            params![Utc::now().to_rfc3339(), duration_seconds, text, config.provider, config.model, status_text],
+            "INSERT INTO recognition_records (created_at, duration_seconds, text, provider, model, status, error_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                Utc::now().to_rfc3339(),
+                duration_seconds,
+                text,
+                config.provider,
+                config.model,
+                status_text,
+                error_message
+            ],
         )?;
         Ok(())
     }
@@ -181,7 +204,9 @@ impl AppDb {
 
     pub fn list_vocabulary(&self) -> Result<Vec<VocabularyItem>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        let mut stmt = conn.prepare("SELECT id, term, alias, category, note, enabled FROM vocabulary ORDER BY id DESC")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, term, alias, category, note, enabled FROM vocabulary ORDER BY id DESC",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(VocabularyItem {
                 id: row.get(0)?,
@@ -230,7 +255,8 @@ impl AppDb {
 
     pub fn list_style_prompts(&self) -> Result<Vec<StylePrompt>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        let mut stmt = conn.prepare("SELECT id, name, prompt, enabled FROM style_prompts ORDER BY id DESC")?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, prompt, enabled FROM style_prompts ORDER BY id DESC")?;
         let rows = stmt.query_map([], |row| {
             Ok(StylePrompt {
                 id: row.get(0)?,
@@ -323,7 +349,8 @@ mod tests {
         };
 
         db.save_config(&config).unwrap();
-        db.insert_record("识别文本", 9, RecognitionStatus::Success).unwrap();
+        db.insert_record("识别文本", 9, RecognitionStatus::Success)
+            .unwrap();
         db.add_vocabulary(&VocabularyItem {
             id: 0,
             term: "Qwen".to_string(),
@@ -351,12 +378,8 @@ mod tests {
     fn manages_batch_vocabulary_and_style_prompt_changes() {
         let db = AppDb::in_memory().unwrap();
 
-        db.add_vocabulary_terms(&[
-            "Qwen".to_string(),
-            "  ".to_string(),
-            "MiMo".to_string(),
-        ])
-        .unwrap();
+        db.add_vocabulary_terms(&["Qwen".to_string(), "  ".to_string(), "MiMo".to_string()])
+            .unwrap();
 
         let vocabulary = db.list_vocabulary().unwrap();
         assert_eq!(vocabulary.len(), 2);

@@ -153,3 +153,22 @@ export async function simulateRecognition(): Promise<RecognitionRecord> {
   demoRecords.unshift(record);
   return record;
 }
+
+export async function recognizeAudio(input: {
+  audioBase64: string;
+  durationSeconds: number;
+  mimeType: string;
+}): Promise<RecognitionRecord> {
+  if (isTauri) return invoke('recognize_audio', { input });
+  const record: RecognitionRecord = {
+    id: Date.now(),
+    createdAt: new Date().toISOString(),
+    durationSeconds: input.durationSeconds,
+    text: '这是一次本地预览识别结果。桌面端会发送真实录音到模型 API。',
+    provider: demoConfig.provider,
+    model: demoConfig.model,
+    status: 'success',
+  };
+  demoRecords.unshift(record);
+  return record;
+}

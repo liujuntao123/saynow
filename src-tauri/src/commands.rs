@@ -1,10 +1,12 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     db::{AppConfig, AppDb},
     models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem},
-    platform::{current_platform_status, PlatformStatus},
+    platform::{current_platform_status, inject_text, PlatformStatus},
     prompt::build_prompt_context,
+    provider::{build_openai_compatible_payload, extract_openai_compatible_text},
     stats::{aggregate_usage_stats, UsageStats},
 };
 
@@ -14,6 +16,14 @@ pub struct DashboardData {
     pub stats: UsageStats,
     pub records: Vec<RecognitionRecord>,
     pub platform: PlatformStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecognitionAudioInput {
+    pub audio_base64: String,
+    pub duration_seconds: u32,
+    pub mime_type: String,
 }
 
 pub fn dashboard_data(db: &AppDb) -> Result<DashboardData, String> {
@@ -42,18 +52,27 @@ pub fn list_vocabulary_data(db: &AppDb) -> Result<Vec<VocabularyItem>, String> {
     db.list_vocabulary().map_err(|error| error.to_string())
 }
 
-pub fn add_vocabulary_data(db: &AppDb, item: VocabularyItem) -> Result<Vec<VocabularyItem>, String> {
-    db.add_vocabulary(&item).map_err(|error| error.to_string())?;
+pub fn add_vocabulary_data(
+    db: &AppDb,
+    item: VocabularyItem,
+) -> Result<Vec<VocabularyItem>, String> {
+    db.add_vocabulary(&item)
+        .map_err(|error| error.to_string())?;
     list_vocabulary_data(db)
 }
 
-pub fn add_vocabulary_terms_data(db: &AppDb, terms: Vec<String>) -> Result<Vec<VocabularyItem>, String> {
-    db.add_vocabulary_terms(&terms).map_err(|error| error.to_string())?;
+pub fn add_vocabulary_terms_data(
+    db: &AppDb,
+    terms: Vec<String>,
+) -> Result<Vec<VocabularyItem>, String> {
+    db.add_vocabulary_terms(&terms)
+        .map_err(|error| error.to_string())?;
     list_vocabulary_data(db)
 }
 
 pub fn delete_vocabulary_data(db: &AppDb, id: i64) -> Result<Vec<VocabularyItem>, String> {
-    db.delete_vocabulary(id).map_err(|error| error.to_string())?;
+    db.delete_vocabulary(id)
+        .map_err(|error| error.to_string())?;
     list_vocabulary_data(db)
 }
 
@@ -62,17 +81,20 @@ pub fn list_style_prompts_data(db: &AppDb) -> Result<Vec<StylePrompt>, String> {
 }
 
 pub fn add_style_prompt_data(db: &AppDb, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
-    db.add_style_prompt(&item).map_err(|error| error.to_string())?;
+    db.add_style_prompt(&item)
+        .map_err(|error| error.to_string())?;
     list_style_prompts_data(db)
 }
 
 pub fn update_style_prompt_data(db: &AppDb, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
-    db.update_style_prompt(&item).map_err(|error| error.to_string())?;
+    db.update_style_prompt(&item)
+        .map_err(|error| error.to_string())?;
     list_style_prompts_data(db)
 }
 
 pub fn delete_style_prompt_data(db: &AppDb, id: i64) -> Result<Vec<StylePrompt>, String> {
-    db.delete_style_prompt(id).map_err(|error| error.to_string())?;
+    db.delete_style_prompt(id)
+        .map_err(|error| error.to_string())?;
     list_style_prompts_data(db)
 }
 
@@ -93,6 +115,129 @@ pub fn simulate_recognition_data(db: &AppDb) -> Result<RecognitionRecord, String
         .into_iter()
         .next()
         .ok_or_else(|| "failed to load simulated record".to_string())
+}
+
+pub fn recognize_audio_data(
+    db: &AppDb,
+    input: RecognitionAudioInput,
+) -> Result<RecognitionRecord, String> {
+    if input.audio_base64.trim().is_empty() {
+        return insert_failed_record(db, "录音数据为空。", input.duration_seconds.max(1));
+    }
+
+    let config = db.get_config().map_err(|error| error.to_string())?;
+    let vocabulary = db.list_vocabulary().map_err(|error| error.to_string())?;
+    let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
+    let records = db.list_records(10).map_err(|error| error.to_string())?;
+    let prompt = build_prompt_context(&vocabulary, &styles, &records);
+    let format = audio_format_from_mime(&input.mime_type);
+    let payload =
+        build_openai_compatible_payload(&config.model, &prompt, &input.audio_base64, &format);
+
+    let recognition_result = call_openai_compatible_chat(&config, payload);
+    let text = match recognition_result {
+        Ok(text) => text,
+        Err(error) => return insert_failed_record(db, &error, input.duration_seconds.max(1)),
+    };
+
+    let injection_error = inject_text(&text).err();
+    db.insert_record_with_error(
+        &text,
+        input.duration_seconds.max(1),
+        RecognitionStatus::Success,
+        injection_error.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    latest_record(db)
+}
+
+fn call_openai_compatible_chat(
+    config: &crate::db::AppConfig,
+    payload: Value,
+) -> Result<String, String> {
+    let api_key = resolve_api_key(&config.api_key_ref)?;
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let response = reqwest::blocking::Client::new()
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("识别请求失败：{error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("读取识别响应失败：{error}"))?;
+    if !status.is_success() {
+        return Err(format!("识别请求返回 {status}：{body}"));
+    }
+
+    let json: Value =
+        serde_json::from_str(&body).map_err(|error| format!("识别响应不是有效 JSON：{error}"))?;
+    extract_openai_compatible_text(&json).ok_or_else(|| "识别响应中没有可用文本。".to_string())
+}
+
+fn resolve_api_key(api_key_ref: &str) -> Result<String, String> {
+    let normalized = api_key_ref.trim();
+    if normalized.is_empty() {
+        return Err("API Key 为空。".to_string());
+    }
+
+    let value = if let Some(env_name) = normalized.strip_prefix("env:") {
+        std::env::var(env_name).map_err(|_| format!("环境变量 {env_name} 未设置。"))?
+    } else if normalized == "credential-manager:mimo" {
+        std::env::var("SAYNOW_MIMO_API_KEY")
+            .map_err(|_| "环境变量 SAYNOW_MIMO_API_KEY 未设置。".to_string())?
+    } else if normalized == "credential-manager:qwen" {
+        std::env::var("SAYNOW_QWEN_API_KEY")
+            .map_err(|_| "环境变量 SAYNOW_QWEN_API_KEY 未设置。".to_string())?
+    } else if let Some(key) = normalized.strip_prefix("literal:") {
+        key.to_string()
+    } else {
+        normalized.to_string()
+    };
+
+    if value.trim().is_empty() {
+        Err("API Key 为空。".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+fn audio_format_from_mime(mime_type: &str) -> String {
+    let mime = mime_type.to_ascii_lowercase();
+    if mime.contains("wav") {
+        "wav"
+    } else if mime.contains("mpeg") || mime.contains("mp3") {
+        "mp3"
+    } else if mime.contains("ogg") {
+        "ogg"
+    } else if mime.contains("webm") {
+        "webm"
+    } else if mime.contains("mp4") || mime.contains("m4a") {
+        "mp4"
+    } else {
+        "webm"
+    }
+    .to_string()
+}
+
+fn insert_failed_record(
+    db: &AppDb,
+    error: &str,
+    duration_seconds: u32,
+) -> Result<RecognitionRecord, String> {
+    db.insert_record_with_error("", duration_seconds, RecognitionStatus::Failed, Some(error))
+        .map_err(|db_error| db_error.to_string())?;
+    let _ = latest_record(db)?;
+    Err(error.to_string())
+}
+
+fn latest_record(db: &AppDb) -> Result<RecognitionRecord, String> {
+    db.list_records(1)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "failed to load recognition record".to_string())
 }
 
 #[cfg(feature = "desktop")]
@@ -127,12 +272,18 @@ mod tauri_commands {
     }
 
     #[tauri::command]
-    pub fn add_vocabulary(db: State<'_, AppDb>, item: VocabularyItem) -> Result<Vec<VocabularyItem>, String> {
+    pub fn add_vocabulary(
+        db: State<'_, AppDb>,
+        item: VocabularyItem,
+    ) -> Result<Vec<VocabularyItem>, String> {
         add_vocabulary_data(&db, item)
     }
 
     #[tauri::command]
-    pub fn add_vocabulary_terms(db: State<'_, AppDb>, terms: Vec<String>) -> Result<Vec<VocabularyItem>, String> {
+    pub fn add_vocabulary_terms(
+        db: State<'_, AppDb>,
+        terms: Vec<String>,
+    ) -> Result<Vec<VocabularyItem>, String> {
         add_vocabulary_terms_data(&db, terms)
     }
 
@@ -147,12 +298,18 @@ mod tauri_commands {
     }
 
     #[tauri::command]
-    pub fn add_style_prompt(db: State<'_, AppDb>, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
+    pub fn add_style_prompt(
+        db: State<'_, AppDb>,
+        item: StylePrompt,
+    ) -> Result<Vec<StylePrompt>, String> {
         add_style_prompt_data(&db, item)
     }
 
     #[tauri::command]
-    pub fn update_style_prompt(db: State<'_, AppDb>, item: StylePrompt) -> Result<Vec<StylePrompt>, String> {
+    pub fn update_style_prompt(
+        db: State<'_, AppDb>,
+        item: StylePrompt,
+    ) -> Result<Vec<StylePrompt>, String> {
         update_style_prompt_data(&db, item)
     }
 
@@ -166,7 +323,16 @@ mod tauri_commands {
         simulate_recognition_data(&db)
     }
 
-    pub fn handlers<R: tauri::Runtime>() -> Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static> {
+    #[tauri::command]
+    pub fn recognize_audio(
+        db: State<'_, AppDb>,
+        input: RecognitionAudioInput,
+    ) -> Result<RecognitionRecord, String> {
+        recognize_audio_data(&db, input)
+    }
+
+    pub fn handlers<R: tauri::Runtime>(
+    ) -> Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static> {
         Box::new(tauri::generate_handler![
             get_dashboard,
             get_config,
@@ -180,7 +346,8 @@ mod tauri_commands {
             add_style_prompt,
             update_style_prompt,
             delete_style_prompt,
-            simulate_recognition
+            simulate_recognition,
+            recognize_audio
         ])
     }
 }
@@ -208,7 +375,8 @@ mod tests {
     fn commands_manage_vocabulary_and_style_prompts() {
         let db = AppDb::in_memory().unwrap();
 
-        let vocabulary = add_vocabulary_terms_data(&db, vec!["Qwen".to_string(), "MiMo".to_string()]).unwrap();
+        let vocabulary =
+            add_vocabulary_terms_data(&db, vec!["Qwen".to_string(), "MiMo".to_string()]).unwrap();
         assert_eq!(vocabulary.len(), 2);
 
         let vocabulary = delete_vocabulary_data(&db, vocabulary[0].id).unwrap();
@@ -232,5 +400,38 @@ mod tests {
 
         let styles = delete_style_prompt_data(&db, styles[0].id).unwrap();
         assert!(styles.is_empty());
+    }
+
+    #[test]
+    fn resolves_supported_audio_formats_from_mime_types() {
+        assert_eq!(audio_format_from_mime("audio/wav"), "wav");
+        assert_eq!(audio_format_from_mime("audio/webm;codecs=opus"), "webm");
+        assert_eq!(audio_format_from_mime("audio/mpeg"), "mp3");
+    }
+
+    #[test]
+    fn resolves_literal_api_keys_without_environment() {
+        assert_eq!(resolve_api_key("literal:test-key").unwrap(), "test-key");
+        assert_eq!(resolve_api_key("direct-key").unwrap(), "direct-key");
+    }
+
+    #[test]
+    fn failed_recognition_persists_error_record() {
+        let db = AppDb::in_memory().unwrap();
+
+        let error = recognize_audio_data(
+            &db,
+            RecognitionAudioInput {
+                audio_base64: "YXVkaW8=".to_string(),
+                duration_seconds: 2,
+                mime_type: "audio/webm".to_string(),
+            },
+        )
+        .unwrap_err();
+        let records = db.list_records(1).unwrap();
+
+        assert!(error.contains("环境变量 SAYNOW_MIMO_API_KEY 未设置"));
+        assert_eq!(records[0].status, RecognitionStatus::Failed);
+        assert_eq!(records[0].duration_seconds, 2);
     }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createHoldHotkeyController, formatHotkey, isModifierOnlyHotkey } from '../hotkeyRecorder';
+import { createHoldHotkeyController, formatHotkey, isModifierOnlyHotkey, toGlobalShortcut } from '../hotkeyRecorder';
 
 function keyEvent(input: Partial<KeyboardEvent>): KeyboardEvent {
   return input as KeyboardEvent;
@@ -25,6 +25,11 @@ describe('hotkey recorder', () => {
 
   it('treats Escape as cancellation instead of a hotkey', () => {
     expect(formatHotkey(keyEvent({ key: 'Escape' }))).toBeNull();
+  });
+
+  it('converts app hotkeys to Tauri global shortcut syntax', () => {
+    expect(toGlobalShortcut('Ctrl+Space')).toBe('CommandOrControl+Space');
+    expect(toGlobalShortcut('Alt+Shift+K')).toBe('Alt+Shift+K');
   });
 
   it('starts recording on hotkey down and stops recording when the hotkey is released', () => {

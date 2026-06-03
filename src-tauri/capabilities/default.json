@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Desktop permissions for saynow runtime shortcuts and overlay.",
+  "windows": ["main", "recorder"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
+    "global-shortcut:allow-is-registered"
+  ]
+}

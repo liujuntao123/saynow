@@ -39,6 +39,16 @@ export function isModifierOnlyHotkey(hotkey: string): boolean {
   return parts.length > 0 && parts.every((part) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
 }
 
+export function toGlobalShortcut(hotkey: string): string {
+  return hotkeyParts(hotkey)
+    .map((part) => {
+      if (part === 'Ctrl') return 'CommandOrControl';
+      if (part === 'Meta') return 'Command';
+      return part;
+    })
+    .join('+');
+}
+
 export interface HoldHotkeyHandlers {
   onStart: () => void;
   onStop: () => void;

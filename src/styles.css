@@ -38,6 +38,13 @@ body {
   min-height: 100vh;
 }
 
+body.recorder-body {
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
 button,
 input,
 select,
@@ -51,6 +58,71 @@ button {
 
 #app {
   min-height: 100vh;
+}
+
+.recorder-overlay {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  width: 100vw;
+  height: 100vh;
+  border: 1px solid rgb(17 140 130 / 24%);
+  border-radius: 8px;
+  color: #163331;
+  background: rgb(255 254 250 / 96%);
+  box-shadow: 0 16px 36px rgb(22 34 31 / 16%);
+  user-select: none;
+}
+
+.recorder-overlay .app-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--accent-dark);
+}
+
+.recorder-overlay strong {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.recorder-overlay span:last-child {
+  min-width: 48px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.recorder-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 99px;
+  background: var(--danger);
+  box-shadow: 0 0 0 8px rgb(200 77 77 / 12%);
+  animation: recorder-pulse 1s ease-in-out infinite;
+}
+
+.recorder-overlay.processing .recorder-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 8px rgb(154 106 22 / 12%);
+}
+
+.recorder-overlay.error {
+  border-color: rgb(200 77 77 / 28%);
+}
+
+@keyframes recorder-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.72;
+  }
+
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
 }
 
 .app-shell {

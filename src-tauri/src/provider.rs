@@ -26,7 +26,7 @@ pub fn build_openai_compatible_payload(
             {
                 "role": "user",
                 "content": [
-                    { "type": "input_text", "text": "请识别这段音频，只输出最终文本。" },
+                    { "type": "text", "text": "请识别这段音频，只输出最终文本。" },
                     {
                         "type": "input_audio",
                         "input_audio": {
@@ -60,6 +60,7 @@ mod tests {
 
         assert_eq!(payload["model"], "mimo-v2.5");
         assert_eq!(payload["messages"][0]["content"], "prompt");
+        assert_eq!(payload["messages"][1]["content"][0]["type"], "text");
         assert_eq!(
             payload["messages"][1]["content"][1]["input_audio"]["data"],
             "AAA"

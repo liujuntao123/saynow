@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createHoldHotkeyController, formatHotkey, isModifierOnlyHotkey, toGlobalShortcut } from '../hotkeyRecorder';
+import { createHoldHotkeyController, formatHotkey, isModifierOnlyHotkey, toGlobalShortcut, toModifierHotkeyParts } from '../hotkeyRecorder';
 
 function keyEvent(input: Partial<KeyboardEvent>): KeyboardEvent {
   return input as KeyboardEvent;
@@ -30,6 +30,11 @@ describe('hotkey recorder', () => {
   it('converts app hotkeys to Tauri global shortcut syntax', () => {
     expect(toGlobalShortcut('Ctrl+Space')).toBe('CommandOrControl+Space');
     expect(toGlobalShortcut('Alt+Shift+K')).toBe('Alt+Shift+K');
+  });
+
+  it('extracts modifier parts for the native monitor', () => {
+    expect(toModifierHotkeyParts('Ctrl+Shift')).toEqual(['Ctrl', 'Shift']);
+    expect(toModifierHotkeyParts('Ctrl+Space')).toEqual(['Ctrl']);
   });
 
   it('starts recording on hotkey down and stops recording when the hotkey is released', () => {

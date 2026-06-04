@@ -39,6 +39,10 @@ export function isModifierOnlyHotkey(hotkey: string): boolean {
   return parts.length > 0 && parts.every((part) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
 }
 
+export function toModifierHotkeyParts(hotkey: string): string[] {
+  return hotkeyParts(hotkey).filter((part) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
+}
+
 export function toGlobalShortcut(hotkey: string): string {
   return hotkeyParts(hotkey)
     .map((part) => {

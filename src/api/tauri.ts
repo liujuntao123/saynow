@@ -172,3 +172,7 @@ export async function recognizeAudio(input: {
   demoRecords.unshift(record);
   return record;
 }
+
+export async function setModifierHotkeyMonitor(parts: string[] | null): Promise<void> {
+  if (isTauri) return invoke('set_modifier_hotkey_monitor', { parts });
+}

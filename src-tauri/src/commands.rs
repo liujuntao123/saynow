@@ -121,7 +121,14 @@ pub fn recognize_audio_data(
     db: &AppDb,
     input: RecognitionAudioInput,
 ) -> Result<RecognitionRecord, String> {
+    eprintln!(
+        "[saynow] recognize_audio started; duration={}s mime={} base64_len={}",
+        input.duration_seconds,
+        input.mime_type,
+        input.audio_base64.len()
+    );
     if input.audio_base64.trim().is_empty() {
+        eprintln!("[saynow] recognize_audio rejected empty audio");
         return insert_failed_record(db, "录音数据为空。", input.duration_seconds.max(1));
     }
 
@@ -131,6 +138,13 @@ pub fn recognize_audio_data(
     let records = db.list_records(10).map_err(|error| error.to_string())?;
     let prompt = build_prompt_context(&vocabulary, &styles, &records);
     let format = audio_format_from_mime(&input.mime_type);
+    eprintln!(
+        "[saynow] recognize_audio building request; provider={} model={} format={} prompt_chars={}",
+        config.provider,
+        config.model,
+        format,
+        prompt.chars().count()
+    );
     let payload =
         build_openai_compatible_payload(&config.model, &prompt, &input.audio_base64, &format);
 
@@ -141,6 +155,11 @@ pub fn recognize_audio_data(
     };
 
     let injection_error = inject_text(&text).err();
+    if let Some(error) = injection_error.as_deref() {
+        eprintln!("[saynow] text injection failed: {error}");
+    } else {
+        eprintln!("[saynow] text injection finished");
+    }
     db.insert_record_with_error(
         &text,
         input.duration_seconds.max(1),
@@ -157,6 +176,10 @@ fn call_openai_compatible_chat(
 ) -> Result<String, String> {
     let api_key = resolve_api_key(&config.api_key_ref)?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    eprintln!(
+        "[saynow] sending recognition request; url={} model={}",
+        url, config.model
+    );
     let response = reqwest::blocking::Client::new()
         .post(url)
         .bearer_auth(api_key)
@@ -164,6 +187,7 @@ fn call_openai_compatible_chat(
         .send()
         .map_err(|error| format!("识别请求失败：{error}"))?;
     let status = response.status();
+    eprintln!("[saynow] recognition response status={status}");
     let body = response
         .text()
         .map_err(|error| format!("读取识别响应失败：{error}"))?;
@@ -173,7 +197,13 @@ fn call_openai_compatible_chat(
 
     let json: Value =
         serde_json::from_str(&body).map_err(|error| format!("识别响应不是有效 JSON：{error}"))?;
-    extract_openai_compatible_text(&json).ok_or_else(|| "识别响应中没有可用文本。".to_string())
+    let text = extract_openai_compatible_text(&json)
+        .ok_or_else(|| "识别响应中没有可用文本。".to_string())?;
+    eprintln!(
+        "[saynow] recognition response parsed; text_chars={}",
+        text.chars().count()
+    );
+    Ok(text)
 }
 
 fn resolve_api_key(api_key_ref: &str) -> Result<String, String> {
@@ -226,6 +256,7 @@ fn insert_failed_record(
     error: &str,
     duration_seconds: u32,
 ) -> Result<RecognitionRecord, String> {
+    eprintln!("[saynow] recognize_audio failed: {error}");
     db.insert_record_with_error("", duration_seconds, RecognitionStatus::Failed, Some(error))
         .map_err(|db_error| db_error.to_string())?;
     let _ = latest_record(db)?;
@@ -331,6 +362,14 @@ mod tauri_commands {
         recognize_audio_data(&db, input)
     }
 
+    #[tauri::command]
+    pub fn set_modifier_hotkey_monitor<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+        parts: Option<Vec<String>>,
+    ) -> Result<(), String> {
+        crate::platform::set_modifier_hotkey_monitor(app, parts)
+    }
+
     pub fn handlers<R: tauri::Runtime>(
     ) -> Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static> {
         Box::new(tauri::generate_handler![
@@ -347,7 +386,8 @@ mod tauri_commands {
             update_style_prompt,
             delete_style_prompt,
             simulate_recognition,
-            recognize_audio
+            recognize_audio,
+            set_modifier_hotkey_monitor
         ])
     }
 }

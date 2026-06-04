@@ -31,11 +31,9 @@ mod platform_impl {
     use std::{mem::size_of, ptr::copy_nonoverlapping, thread, time::Duration};
 
     use windows::Win32::{
-        Foundation::{HANDLE, HWND},
+        Foundation::HANDLE,
         System::{
-            DataExchange::{
-                CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_UNICODETEXT,
-            },
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
             Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
         },
         UI::Input::KeyboardAndMouse::{
@@ -43,6 +41,8 @@ mod platform_impl {
             VK_CONTROL, VK_V,
         },
     };
+
+    const CF_UNICODETEXT: u32 = 13;
 
     pub fn inject_text(text: &str) -> Result<(), String> {
         set_clipboard_text(text)?;
@@ -56,7 +56,7 @@ mod platform_impl {
         let byte_len = wide.len() * size_of::<u16>();
 
         unsafe {
-            OpenClipboard(HWND::default()).map_err(|error| format!("无法打开剪贴板：{error}"))?;
+            OpenClipboard(None).map_err(|error| format!("无法打开剪贴板：{error}"))?;
             let clipboard_guard = ClipboardGuard;
 
             EmptyClipboard().map_err(|error| format!("无法清空剪贴板：{error}"))?;
@@ -69,7 +69,7 @@ mod platform_impl {
 
             copy_nonoverlapping(wide.as_ptr().cast::<u8>(), locked.cast::<u8>(), byte_len);
             let _ = GlobalUnlock(handle);
-            SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(handle.0)))
+            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0)))
                 .map_err(|error| format!("无法写入剪贴板：{error}"))?;
 
             std::mem::forget(clipboard_guard);

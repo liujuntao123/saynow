@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { addStylePrompt, updateStylePrompt } from '../tauri';
 
-describe('style prompt demo API', () => {
+describe('local preview API', () => {
   it('keeps at most one style prompt enabled', async () => {
     await addStylePrompt({
       id: 0,

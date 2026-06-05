@@ -1,28 +1,52 @@
 # 说文 saynow
 
-Windows 桌面端语音识别输入工具。MVP 使用 Tauri 2、Vue 3、Rust 和 SQLite 构建，核心流程是全局快捷键录音、调用在线多模态模型识别、自动写入当前聚焦输入框。
+## 产品用户
 
-WSL 环境可以完成前端构建、Rust 单元测试和业务逻辑验证；Windows 托盘、全局快捷键、麦克风录音、文本注入和安装包构建需要在 Windows 上验证。
+### 一句话介绍
 
-## 快速开始
+说文是一个 Windows 桌面端语音输入助手：按住快捷键说话，松开后自动识别语音，并把文字写入当前输入框。
+
+### 产品特性
+
+- 全局快捷键录音：无需切换应用，在任意输入场景中直接触发语音输入。
+- 自动写入文本：识别完成后写入当前聚焦输入框，写入失败时可降级复制到剪贴板。
+- 多模型配置：内置 MiMo-v2.5 和 Qwen3.5-Omni 配置模板，支持自定义 Base URL、模型和 API Key。
+- 个性化识别：支持自定义词库和风格提示词，让识别结果更贴近日常表达。
+- 历史与统计：查看最近识别记录、使用次数和输入效率数据。
+
+### 产品亮点
+
+- 面向真实桌面输入流程，不只是一个语音转文字页面。
+- 把快捷键、录音、识别、文本注入串成一个闭环，减少复制粘贴。
+- 配置开放，方便接入 OpenAI-compatible 的多模态语音模型。
+
+## 产品开发者
+
+### 快速开始开发
 
 ```bash
 npm install
+npm run dev
+```
+
+常用验证命令：
+
+```bash
 npm test -- --run
 npm run build
 cd src-tauri && cargo test
 ```
 
-开发说明见 `docs/development.md`。
+Windows 桌面能力需要在 Windows 原生环境验证：
 
-## 当前闭环
+```bash
+npm run tauri dev -- --features desktop
+```
 
-- 首页展示使用统计和最近识别记录。
-- 配置页支持 MiMo-v2.5 和 Qwen3.5-Omni 模板、Base URL、模型、API Key 安全引用和快捷键。
-- 数据页支持识别记录、自定义词库和风格提示词。
-- WSL/浏览器预览下提供模拟识别，Tauri 环境下通过命令层接入 SQLite 和后端服务。
+### 基本技术介绍
 
-## GitHub Actions
-
-- `CI`：在 Ubuntu 上验证前端测试、前端生产构建和 Rust 核心测试。
-- `Release`：在 Windows runner 上构建 Tauri Windows 安装包，并在推送 `v*` tag 或手动触发时发布 GitHub Release。
+- 前端：Vue 3、TypeScript、Vite、Vitest。
+- 桌面端：Tauri 2，负责窗口、托盘、全局快捷键和前后端命令通信。
+- 后端：Rust，负责本地命令、SQLite 持久化、模型 Provider 调用和 Windows 文本写入能力。
+- 数据：SQLite 保存配置、识别记录、词库、风格提示词和使用统计。
+- 模型接入：以 OpenAI-compatible Chat Completions 为基础，供应商差异在 `src-tauri/src/provider.rs` 中适配。

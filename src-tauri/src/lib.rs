@@ -7,22 +7,22 @@ pub mod provider;
 pub mod stats;
 
 #[cfg(feature = "desktop")]
+use tauri::Manager;
+
+#[cfg(feature = "desktop")]
 pub fn run() {
     use tauri::{
         menu::MenuBuilder,
         tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-        Manager, WindowEvent,
+        WindowEvent,
     };
 
-    let db_path = std::env::current_dir()
-        .expect("failed to read current dir")
-        .join("saynow.sqlite");
-    let db = db::AppDb::open(&db_path).expect("failed to open app database");
-
     tauri::Builder::default()
-        .manage(db)
         .invoke_handler(commands::handlers())
         .setup(|app| {
+            let db = open_app_database(app)?;
+            app.manage(db);
+
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 allow_microphone_permission(&window)?;
@@ -72,6 +72,106 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run tauri application");
+}
+
+#[cfg(feature = "desktop")]
+fn open_app_database<R: tauri::Runtime>(app: &tauri::App<R>) -> Result<db::AppDb, tauri::Error> {
+    let data_dir = app.path().app_data_dir().map_err(|error| {
+        tauri::Error::Anyhow(anyhow::anyhow!(
+            "failed to resolve app data directory: {error}"
+        ))
+    })?;
+    std::fs::create_dir_all(&data_dir).map_err(|error| {
+        tauri::Error::Anyhow(anyhow::anyhow!(
+            "failed to create app data directory {}: {error}",
+            data_dir.display()
+        ))
+    })?;
+
+    let db_path = data_dir.join("saynow.sqlite");
+    migrate_legacy_database(&db_path)?;
+    db::AppDb::open(&db_path).map_err(|error| {
+        tauri::Error::Anyhow(anyhow::anyhow!(
+            "failed to open app database {}: {error}",
+            db_path.display()
+        ))
+    })
+}
+
+#[cfg(feature = "desktop")]
+fn migrate_legacy_database(db_path: &std::path::Path) -> Result<(), tauri::Error> {
+    if db_path.exists() {
+        return Ok(());
+    }
+
+    let legacy_path = std::env::current_dir()
+        .map_err(|error| {
+            tauri::Error::Anyhow(anyhow::anyhow!("failed to read current directory: {error}"))
+        })?
+        .join("saynow.sqlite");
+    migrate_legacy_database_from(&legacy_path, db_path)
+}
+
+#[cfg(feature = "desktop")]
+fn migrate_legacy_database_from(
+    legacy_path: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Result<(), tauri::Error> {
+    if legacy_path == db_path || db_path.exists() || !legacy_path.exists() {
+        return Ok(());
+    }
+
+    std::fs::copy(&legacy_path, db_path).map_err(|error| {
+        tauri::Error::Anyhow(anyhow::anyhow!(
+            "failed to migrate app database from {} to {}: {error}",
+            legacy_path.display(),
+            db_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_legacy_database_when_app_data_database_is_missing() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "saynow-db-migration-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let legacy_dir = test_dir.join("legacy");
+        let data_dir = test_dir.join("data");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let legacy_path = legacy_dir.join("saynow.sqlite");
+        let db_path = data_dir.join("saynow.sqlite");
+        let legacy_db = db::AppDb::open(&legacy_path).unwrap();
+        legacy_db
+            .save_config(&db::AppConfig {
+                provider: "Qwen".to_string(),
+                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+                model: "qwen-custom".to_string(),
+                api_key_ref: "literal:test-key".to_string(),
+                hotkey: "Alt+Space".to_string(),
+            })
+            .unwrap();
+        drop(legacy_db);
+
+        migrate_legacy_database_from(&legacy_path, &db_path).unwrap();
+
+        let migrated_db = db::AppDb::open(&db_path).unwrap();
+        let config = migrated_db.get_config().unwrap();
+        assert_eq!(config.provider, "Qwen");
+        assert_eq!(config.model, "qwen-custom");
+        assert_eq!(config.api_key_ref, "literal:test-key");
+        assert_eq!(config.hotkey, "Alt+Space");
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
 }
 
 #[cfg(feature = "desktop")]

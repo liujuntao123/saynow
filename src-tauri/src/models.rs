@@ -40,3 +40,17 @@ pub struct StylePrompt {
     pub prompt: String,
     pub enabled: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalizationPreferences {
+    pub remove_trailing_period: bool,
+}
+
+impl Default for PersonalizationPreferences {
+    fn default() -> Self {
+        Self {
+            remove_trailing_period: false,
+        }
+    }
+}

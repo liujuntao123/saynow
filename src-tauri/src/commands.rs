@@ -5,7 +5,10 @@ use serde_json::Value;
 
 use crate::{
     db::{AppConfig, AppDb, ProviderConfig},
-    models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem},
+    models::{
+        PersonalizationPreferences, RecognitionRecord, RecognitionStatus, StylePrompt,
+        VocabularyItem,
+    },
     platform::{current_platform_status, inject_text, PlatformStatus},
     prompt::build_prompt_context,
     provider::{
@@ -65,6 +68,9 @@ pub fn save_provider_config_data(
     db: &AppDb,
     provider: ProviderConfig,
 ) -> Result<Vec<ProviderConfig>, String> {
+    if !provider.has_complete_provider() {
+        return Err("供应商配置不完整。".to_string());
+    }
     db.save_provider_config(&provider)
         .map_err(|error| error.to_string())?;
     list_provider_configs_data(db)
@@ -135,23 +141,20 @@ pub fn delete_style_prompt_data(db: &AppDb, id: i64) -> Result<Vec<StylePrompt>,
     list_style_prompts_data(db)
 }
 
-pub fn simulate_recognition_data(db: &AppDb) -> Result<RecognitionRecord, String> {
-    let vocabulary = db.list_vocabulary().map_err(|error| error.to_string())?;
-    let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
-    let records = db.list_records(10).map_err(|error| error.to_string())?;
-    let context = build_prompt_context(&vocabulary, &styles, &records);
-    let text = if context.contains("书面语") {
-        "这是一次模拟语音识别结果，已按照书面语风格整理。"
-    } else {
-        "这是一次模拟语音识别结果。"
-    };
-    db.insert_record(text, 6, RecognitionStatus::Success)
+pub fn get_personalization_preferences_data(
+    db: &AppDb,
+) -> Result<PersonalizationPreferences, String> {
+    db.get_personalization_preferences()
+        .map_err(|error| error.to_string())
+}
+
+pub fn save_personalization_preferences_data(
+    db: &AppDb,
+    preferences: PersonalizationPreferences,
+) -> Result<PersonalizationPreferences, String> {
+    db.save_personalization_preferences(&preferences)
         .map_err(|error| error.to_string())?;
-    db.list_records(1)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "failed to load simulated record".to_string())
+    Ok(preferences)
 }
 
 pub fn recognize_audio_data(
@@ -181,6 +184,13 @@ where
     }
 
     let config = db.get_config().map_err(|error| error.to_string())?;
+    if !config.has_complete_provider() {
+        return insert_failed_record(
+            db,
+            "请先在配置页添加并启用大模型供应商。",
+            input.duration_seconds.max(1),
+        );
+    }
     let vocabulary = db.list_vocabulary().map_err(|error| error.to_string())?;
     let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
     let records = db.list_records(10).map_err(|error| error.to_string())?;
@@ -207,7 +217,23 @@ where
         Err(error) => return insert_failed_record(db, &error, input.duration_seconds.max(1)),
     };
 
+    let preferences = db
+        .get_personalization_preferences()
+        .map_err(|error| error.to_string())?;
+    let text = apply_text_preferences(text, &preferences);
     persist_recognized_text(db, text, input.duration_seconds, inject_text)
+}
+
+fn apply_text_preferences(text: String, preferences: &PersonalizationPreferences) -> String {
+    if !preferences.remove_trailing_period {
+        return text;
+    }
+
+    let mut text = text;
+    if matches!(text.chars().last(), Some('。' | '.')) {
+        text.pop();
+    }
+    text
 }
 
 fn persist_recognized_text<F>(
@@ -481,8 +507,18 @@ mod tauri_commands {
     }
 
     #[tauri::command]
-    pub fn simulate_recognition(db: State<'_, AppDb>) -> Result<RecognitionRecord, String> {
-        simulate_recognition_data(&db)
+    pub fn get_personalization_preferences(
+        db: State<'_, AppDb>,
+    ) -> Result<PersonalizationPreferences, String> {
+        get_personalization_preferences_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn save_personalization_preferences(
+        db: State<'_, AppDb>,
+        preferences: PersonalizationPreferences,
+    ) -> Result<PersonalizationPreferences, String> {
+        save_personalization_preferences_data(&db, preferences)
     }
 
     #[tauri::command]
@@ -597,7 +633,8 @@ mod tauri_commands {
             add_style_prompt,
             update_style_prompt,
             delete_style_prompt,
-            simulate_recognition,
+            get_personalization_preferences,
+            save_personalization_preferences,
             recognize_audio,
             show_recorder_overlay_no_activate,
             hide_recorder_overlay,
@@ -613,18 +650,6 @@ pub use tauri_commands::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn simulated_recognition_persists_a_success_record() {
-        let db = AppDb::in_memory().unwrap();
-
-        let record = simulate_recognition_data(&db).unwrap();
-        let dashboard = dashboard_data(&db).unwrap();
-
-        assert_eq!(record.status, RecognitionStatus::Success);
-        assert_eq!(dashboard.stats.total_records, 1);
-        assert_eq!(dashboard.records[0].text, record.text);
-    }
 
     #[test]
     fn commands_manage_vocabulary_and_style_prompts() {
@@ -661,6 +686,8 @@ mod tests {
     fn commands_manage_provider_configs() {
         let db = AppDb::in_memory().unwrap();
 
+        assert!(list_provider_configs_data(&db).unwrap().is_empty());
+
         let providers = save_provider_config_data(
             &db,
             ProviderConfig {
@@ -680,12 +707,24 @@ mod tests {
         assert!(qwen.enabled);
         assert_eq!(get_config_data(&db).unwrap().model, "qwen3.5-omni-plus");
 
-        let mimo = providers
+        let providers = save_provider_config_data(
+            &db,
+            ProviderConfig {
+                id: 0,
+                provider: "Custom".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                model: "custom-model".to_string(),
+                api_key_ref: "literal:test-key".to_string(),
+                enabled: false,
+            },
+        )
+        .unwrap();
+        let custom = providers
             .iter()
-            .find(|provider| provider.provider == "MiMo")
+            .find(|provider| provider.provider == "Custom")
             .unwrap();
-        let config = select_provider_config_data(&db, mimo.id).unwrap();
-        assert_eq!(config.provider, "MiMo");
+        let config = select_provider_config_data(&db, custom.id).unwrap();
+        assert_eq!(config.provider, "Custom");
 
         let providers = delete_provider_config_data(&db, qwen.id).unwrap();
         assert!(providers.iter().all(|provider| provider.provider != "Qwen"));
@@ -700,6 +739,14 @@ mod tests {
     #[test]
     fn failed_recognition_persists_error_record() {
         let db = AppDb::in_memory().unwrap();
+        db.save_config(&AppConfig {
+            provider: "MiMo".to_string(),
+            base_url: "https://api.xiaomimimo.com/v1".to_string(),
+            model: "mimo-v2.5".to_string(),
+            api_key_ref: "credential-manager:mimo".to_string(),
+            hotkey: "Alt".to_string(),
+        })
+        .unwrap();
 
         let error = recognize_audio_data(
             &db,
@@ -715,6 +762,27 @@ mod tests {
         assert!(error.contains("环境变量 SAYNOW_MIMO_API_KEY 未设置"));
         assert_eq!(records[0].status, RecognitionStatus::Failed);
         assert_eq!(records[0].duration_seconds, 2);
+    }
+
+    #[test]
+    fn recognition_without_provider_config_persists_clear_error() {
+        let db = AppDb::in_memory().unwrap();
+
+        let error = recognize_audio_data(
+            &db,
+            RecognitionAudioInput {
+                audio_base64: "YXVkaW8=".to_string(),
+                duration_seconds: 2,
+                mime_type: "audio/webm".to_string(),
+            },
+        )
+        .unwrap_err();
+        let records = db.list_records(1).unwrap();
+
+        assert!(error.contains("请先在配置页添加并启用大模型供应商"));
+        assert_eq!(records[0].provider, "");
+        assert_eq!(records[0].model, "");
+        assert_eq!(records[0].status, RecognitionStatus::Failed);
     }
 
     #[test]
@@ -737,5 +805,20 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("已取消插入"));
+    }
+
+    #[test]
+    fn text_preferences_remove_trailing_period_only_when_enabled() {
+        let enabled = PersonalizationPreferences {
+            remove_trailing_period: true,
+        };
+        let disabled = PersonalizationPreferences {
+            remove_trailing_period: false,
+        };
+
+        assert_eq!(apply_text_preferences("你好。".to_string(), &enabled), "你好");
+        assert_eq!(apply_text_preferences("hello.".to_string(), &enabled), "hello");
+        assert_eq!(apply_text_preferences("你好！".to_string(), &enabled), "你好！");
+        assert_eq!(apply_text_preferences("你好。".to_string(), &disabled), "你好。");
     }
 }

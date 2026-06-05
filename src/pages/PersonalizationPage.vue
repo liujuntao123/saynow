@@ -4,19 +4,34 @@ import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import UiPanel from '../components/UiPanel.vue';
-import type { StylePrompt, VocabularyItem } from '../types';
+import type { PersonalizationPreferences, StylePrompt, VocabularyItem } from '../types';
 
-const props = defineProps<{ vocabulary: VocabularyItem[]; styles: StylePrompt[]; }>();
-const emit = defineEmits<{ addVocabularyTerms: [terms: string[]]; deleteVocabulary: [id: number]; addStyle: [item: StylePrompt]; updateStyle: [item: StylePrompt]; deleteStyle: [id: number]; }>();
+const props = defineProps<{
+  vocabulary: VocabularyItem[];
+  styles: StylePrompt[];
+  preferences: PersonalizationPreferences;
+}>();
+const emit = defineEmits<{
+  addVocabularyTerms: [terms: string[]];
+  deleteVocabulary: [id: number];
+  addStyle: [item: StylePrompt];
+  updateStyle: [item: StylePrompt];
+  deleteStyle: [id: number];
+  updatePreferences: [preferences: PersonalizationPreferences];
+}>();
 
-const activeTab = ref<'vocabulary' | 'styles'>('vocabulary');
+const activeTab = ref<'vocabulary' | 'styles' | 'features'>('vocabulary');
 const vocabularyText = ref('');
 const styleForm = reactive<StylePrompt>({ id: 0, name: '', prompt: '', enabled: true });
 const selectedStyleId = ref<number | null>(null);
+const preferencesForm = reactive<PersonalizationPreferences>({ removeTrailingPeriod: false });
 watch(() => props.styles, (items) => {
   const current = items.find((item) => item.id === selectedStyleId.value);
   const next = current ?? items.find((item) => item.enabled) ?? items[0];
   selectedStyleId.value = next?.id ?? null; Object.assign(styleForm, next ?? { id: 0, name: '', prompt: '', enabled: true });
+}, { immediate: true });
+watch(() => props.preferences, (preferences) => {
+  Object.assign(preferencesForm, preferences);
 }, { immediate: true });
 
 function selectStyle(item: StylePrompt) { selectedStyleId.value = item.id; Object.assign(styleForm, item); }
@@ -31,6 +46,10 @@ function submitStyle() {
   Object.assign(styleForm, { id: 0, name: '', prompt: '', enabled: true }); selectedStyleId.value = null;
 }
 function createStyleDraft() { selectedStyleId.value = null; Object.assign(styleForm, { id: 0, name: '', prompt: '', enabled: true }); }
+function updateRemoveTrailingPeriod(enabled: boolean) {
+  preferencesForm.removeTrailingPeriod = enabled;
+  emit('updatePreferences', { ...preferencesForm });
+}
 </script>
 
 <template>
@@ -44,6 +63,9 @@ function createStyleDraft() { selectedStyleId.value = null; Object.assign(styleF
       </button>
       <button :class="{ active: activeTab === 'styles' }" type="button" @click="activeTab = 'styles'">
         <AppIcon name="spark" /> 风格提示词
+      </button>
+      <button :class="{ active: activeTab === 'features' }" type="button" @click="activeTab = 'features'">
+        <AppIcon name="settings" /> 功能配置
       </button>
     </div>
 
@@ -106,7 +128,7 @@ function createStyleDraft() { selectedStyleId.value = null; Object.assign(styleF
         <div class="form-row">
           <label>指令要求
             <div class="canvas-wrap">
-              <textarea v-model="styleForm.prompt" rows="8" class="canvas-textarea" placeholder="描述你希望 AI 如何润色和整理文本..."></textarea>
+              <textarea v-model="styleForm.prompt" rows="4" class="canvas-textarea style-prompt-textarea" placeholder="描述你希望 AI 如何润色和整理文本..."></textarea>
             </div>
           </label>
         </div>
@@ -121,6 +143,23 @@ function createStyleDraft() { selectedStyleId.value = null; Object.assign(styleF
           </div>
         </div>
       </form>
+    </section>
+
+    <section v-if="activeTab === 'features'" class="feature-section art-board single-column-board">
+      <UiPanel class="feature-panel art-card clean-panel" title="功能配置" meta="识别结果处理" icon="settings">
+        <button
+          type="button"
+          class="feature-toggle-row"
+          :aria-pressed="preferencesForm.removeTrailingPeriod"
+          @click="updateRemoveTrailingPeriod(!preferencesForm.removeTrailingPeriod)"
+        >
+          <span class="feature-toggle-copy">
+            <strong>去除尾句号</strong>
+            <em>识别文本以句号结尾时，自动去掉最后一个句号。</em>
+          </span>
+          <span class="ios-switch" :class="{ on: preferencesForm.removeTrailingPeriod }"></span>
+        </button>
+      </UiPanel>
     </section>
   </div>
 </template>
@@ -143,36 +182,40 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .check-line input { width: 18px; height: 18px; accent-color: #0f8f83; margin: 0; cursor: pointer; }
 
 /* 页面排版 */
-.page-stack { display: flex; flex-direction: column; gap: 36px; padding-bottom: 40px; align-items: stretch; }
-.art-board { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; animation: fadeUp 0.4s ease; }
+.page-stack { display: flex; flex-direction: column; gap: 20px; min-height: 0; height: 100%; overflow: hidden; align-items: stretch; }
+.art-board { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; flex: 1 1 auto; min-height: 0; overflow: hidden; animation: fadeUp 0.4s ease; }
 .split-section { grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr); }
 .style-management { grid-template-columns: minmax(260px, 0.66fr) minmax(0, 1.34fr); }
+.single-column-board { grid-template-columns: minmax(0, 1fr); align-items: start; }
 @media (max-width: 900px) { .art-board { grid-template-columns: 1fr; } .reverse-on-mobile { display: flex; flex-direction: column-reverse; } }
 
 /* 分段控制器覆盖原本 tabs */
 .tabs.segmented-control {
   position: relative; display: inline-flex; align-self: flex-start; background: #f0f0f5; padding: 4px;
-  border-radius: 14px; border: none; box-shadow: inset 0 2px 4px rgba(0,0,0,0.04); margin: -10px 0 8px;
+  border-radius: 14px; border: none; box-shadow: inset 0 2px 4px rgba(0,0,0,0.04); margin: -6px 0 0; flex: 0 0 auto;
 }
 .segment-pill {
-  position: absolute; top: 4px; bottom: 4px; width: calc(50% - 4px); background: #ffffff;
+  position: absolute; top: 4px; bottom: 4px; width: calc(33.333% - 4px); background: #ffffff;
   border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 .segment-pill.vocabulary { transform: translateX(0); }
 .segment-pill.styles { transform: translateX(100%); }
+.segment-pill.features { transform: translateX(200%); }
 .tabs button {
-  position: relative; z-index: 1; padding: 8px 32px; border: none; background: transparent; height: auto;
+  position: relative; z-index: 1; padding: 8px 28px; border: none; background: transparent; height: auto;
   color: #86868b; font-size: 14px; font-weight: 600; border-radius: 10px; box-shadow: none;
 }
 .tabs button.active { color: #1d1d1f; background: transparent; }
 
 /* 艺术化通用卡片 */
-.art-card { background: #fff; border-radius: 20px; box-shadow: 0 4px 24px -6px rgba(0,0,0,0.04); padding: 32px; border: none; }
-:deep(.clean-panel.ui-panel) { padding: 32px; border-radius: 20px; background: #fff; border: none; box-shadow: 0 4px 24px -6px rgba(0,0,0,0.04); }
-:deep(.clean-panel .ui-panel-header) { margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; }
+.art-card { background: #fff; border-radius: 20px; box-shadow: 0 4px 24px -6px rgba(0,0,0,0.04); padding: 24px; border: none; min-height: 0; overflow: hidden; }
+:deep(.clean-panel.ui-panel) { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 24px; border-radius: 20px; background: #fff; border: none; box-shadow: 0 4px 24px -6px rgba(0,0,0,0.04); }
+:deep(.clean-panel .ui-panel-header) { margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; flex: 0 0 auto; }
+:deep(.clean-panel .empty-state) { flex: 1 1 auto; min-height: 0; }
+.editor-panel { display: flex; flex-direction: column; min-height: 0; }
 
 /* 头部设计 */
-.art-hero { display: flex; align-items: center; gap: 16px; margin-bottom: 32px; width: 100%; }
+.art-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; width: 100%; flex: 0 0 auto; }
 .art-icon-box {
   width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(135deg, rgba(15,143,131,0.1), rgba(15,143,131,0.2)); color: #0f8f83;
@@ -182,15 +225,18 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .ml-auto { margin-left: auto; }
 
 /* 文本域画布 */
-.canvas-wrap { border-radius: 16px; background: #fafafa; padding: 16px; border: 1px solid #f0f0f5; transition: all 0.3s; margin-top: 8px; }
+.canvas-wrap { border-radius: 16px; background: #fafafa; padding: 12px; border: 1px solid #f0f0f5; transition: all 0.3s; margin-top: 8px; min-height: 0; }
 .canvas-wrap:focus-within { background: #fff; border-color: #0f8f83; box-shadow: 0 0 0 4px rgba(15,143,131,0.1); }
 .canvas-textarea { width: 100%; border: none; background: transparent; resize: none; outline: none; font-size: 15px; line-height: 1.6; color: #333; padding: 0; box-shadow: none; }
 .canvas-textarea:focus { box-shadow: none; background: transparent; }
-.form-row { margin-bottom: 24px; width: 100%; }
-.form-footer { margin-top: 32px; padding-top: 24px; border-top: 1px solid #f0f0f5; display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.style-editor-panel .form-row { flex: 0 0 auto; }
+.style-editor-panel .form-row + .form-row { min-height: 0; }
+.style-prompt-textarea { height: 112px; overflow-y: auto; }
+.form-row { margin-bottom: 18px; width: 100%; }
+.form-footer { margin-top: auto; padding-top: 18px; border-top: 1px solid #f0f0f5; display: flex; justify-content: space-between; align-items: center; width: 100%; flex: 0 0 auto; }
 
 /* 词汇气泡 */
-.bubble-cloud { display: flex; flex-wrap: wrap; gap: 10px; }
+.bubble-cloud { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 10px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; scrollbar-gutter: stable; }
 .bubble-tag {
   display: inline-flex; align-items: center; background: #fff; border: 1px solid rgba(0,0,0,0.08);
   padding: 6px 6px 6px 14px; border-radius: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.02); transition: transform 0.2s, border-color 0.2s;
@@ -204,7 +250,7 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .bubble-close:hover { background: #ffebeb; color: #ff3b30; }
 
 /* 样式列表 */
-.style-list { display: flex; flex-direction: column; gap: 12px; }
+.style-list { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; scrollbar-gutter: stable; }
 .style-item {
   display: flex; justify-content: space-between; align-items: center; padding: 16px 20px;
   background: transparent; border: 1px solid #f0f0f5; border-radius: 16px; text-align: left; transition: all 0.3s; width: 100%;
@@ -220,6 +266,16 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .ios-switch::after { content:''; position:absolute; top:2px; left:2px; width:20px; height:20px; background:#fff; border-radius:50%; transition:transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 .ios-switch.on { background: #34c759; }
 .ios-switch.on::after { transform: translateX(20px); }
+
+.feature-panel { max-width: 720px; }
+.feature-toggle-row {
+  width: 100%; min-height: 78px; display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  padding: 18px 20px; background: #fafafa; border: 1px solid #f0f0f5; border-radius: 16px; text-align: left;
+}
+.feature-toggle-row:hover { background: #fff; border-color: #0f8f83; box-shadow: 0 4px 16px rgba(15,143,131,0.08); }
+.feature-toggle-copy { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.feature-toggle-copy strong { font-size: 15px; font-weight: 600; color: #1d1d1f; }
+.feature-toggle-copy em { font-size: 13px; line-height: 1.5; color: #86868b; font-style: normal; }
 
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 </style>

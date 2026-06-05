@@ -31,7 +31,7 @@ function formatDate(value: string) {
       <MetricCard icon="text" label="转换字数" :value="dashboard?.stats.totalCharacters ?? 0" />
     </section>
 
-    <UiPanel title="最近识别记录" :meta="`${dashboard?.records.length ?? 0} 条`" icon="fileText" class="glass-panel">
+    <UiPanel title="最近识别记录" :meta="`${dashboard?.records.length ?? 0} 条`" icon="fileText" class="glass-panel home-record-panel">
       <div v-if="dashboard?.records.length" class="record-card-list compact-record-list">
         <article v-for="(record, index) in dashboard.records" :key="record.id" class="record-card" :style="{ animationDelay: `${index * 40}ms` }">
           <div class="record-card-main">
@@ -54,10 +54,10 @@ function formatDate(value: string) {
 
 <style scoped>
 /* 页面基础排版 */
-.page-stack { display: flex; flex-direction: column; gap: 36px; min-width: 0; padding-bottom: 40px; }
+.page-stack { display: flex; flex-direction: column; gap: 24px; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 
 /* 数据卡片网格 */
-.metrics-grid { display: grid; gap: 30px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.metrics-grid { display: grid; gap: 24px; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 auto; }
 :deep(.metric-card) {
   background: #ffffff;
   backdrop-filter: none;
@@ -65,12 +65,12 @@ function formatDate(value: string) {
   box-shadow: 0 18px 38px -24px rgba(11, 49, 42, 0.32);
   border-radius: 18px;
   transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.3s ease;
-  padding: 36px 40px 34px;
-  min-height: 258px;
+  padding: 28px 32px 26px;
+  min-height: 190px;
   display: grid;
   grid-template-rows: 44px 30px 1fr;
   align-items: start;
-  gap: 22px;
+  gap: 16px;
   overflow: hidden;
 }
 :deep(.metric-card):hover { transform: translateY(-3px); box-shadow: 0 24px 46px -24px rgba(11, 49, 42, 0.38); }
@@ -105,7 +105,7 @@ function formatDate(value: string) {
   -webkit-text-fill-color: currentColor;
 }
 :deep(.metric-value-number) {
-  font-size: 74px;
+  font-size: 58px;
   letter-spacing: -1px;
 }
 :deep(.metric-value-unit) {
@@ -116,26 +116,29 @@ function formatDate(value: string) {
 }
 @media (max-width: 1080px) {
   .metrics-grid { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-  :deep(.metric-card) { min-height: 220px; padding: 30px; }
-  :deep(.metric-value-number) { font-size: 60px; }
+  :deep(.metric-card) { min-height: 172px; padding: 24px; }
+  :deep(.metric-value-number) { font-size: 48px; }
 }
 
 /* 面板深度定制 */
 :deep(.glass-panel) { background: transparent; border: none; box-shadow: none; padding: 0; }
-:deep(.glass-panel .ui-panel-header) { margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid rgba(0,0,0,0.04); display: flex; align-items: center; justify-content: space-between; }
+:deep(.glass-panel .ui-panel-header) { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(0,0,0,0.04); display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; }
+:deep(.home-record-panel) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+:deep(.home-record-panel .empty-state) { flex: 1 1 auto; min-height: 0; }
 
 /* 列表卡片艺术化 */
 .record-card-list { display: flex; flex-direction: column; gap: 16px; }
+.compact-record-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; scrollbar-gutter: stable; }
 .record-card {
   display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;
-  padding: 24px; background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(12px);
+  padding: 18px 20px; background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(12px);
   border-radius: 16px; border: 1px solid rgba(255,255,255,0.8);
   box-shadow: 0 4px 20px -2px rgba(0,0,0,0.02);
   animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
   transition: all 0.3s ease;
 }
 .record-card:hover { background: #ffffff; transform: translateY(-2px); box-shadow: 0 12px 30px -4px rgba(15,143,131,0.06); }
-.record-card-main { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.record-card-main { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .record-card p { margin: 0; font-size: 15px; line-height: 1.6; color: #1d1d1f; letter-spacing: 0.2px; font-weight: 400; }
 
 /* 优雅的标签 */

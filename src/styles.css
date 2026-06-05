@@ -78,7 +78,9 @@ button, input, select, textarea {
 ========================================= */
 
 #app {
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 body.recorder-body #app {
@@ -92,6 +94,7 @@ body.recorder-body #app {
   grid-template-columns: 200px minmax(0, 1fr);
   min-height: 100vh;
   height: 100vh;
+  overflow: hidden;
   /* 增加高雅的背景光晕层 */
   background:
     radial-gradient(circle at 85% 0%, rgba(15, 143, 131, 0.08), transparent 35%),
@@ -104,6 +107,8 @@ body.recorder-body #app {
   display: flex;
   flex-direction: column;
   gap: 32px;
+  min-height: 0;
+  overflow: hidden;
   border-right: var(--glass-border);
   padding: 30px 16px 24px;
   background: rgba(255, 255, 255, 0.45);
@@ -211,9 +216,11 @@ body.recorder-body #app {
 }
 
 .main-panel {
+  height: 100vh;
   min-width: 0;
+  min-height: 0;
   padding: 32px 40px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 /* =========================================
@@ -393,7 +400,9 @@ label {
   flex-direction: column;
   gap: 36px;
   min-width: 0;
-  padding-bottom: 40px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .page-header {

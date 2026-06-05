@@ -1,7 +1,7 @@
 use crate::models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem};
 
 const FORMAT_EXAMPLE: &str =
-    "格式示例：将“五月二十号，也就是五天前，我五点半就起床了，在北京游览了三个景点。晚上，我还和国外的朋友聊了会儿天，非常happy”输出为“5月20号，也就是5天前，我5:30就起床了，在北京游览了3个景点。晚上，我还和国外的朋友聊了会儿天，非常happy”。";
+    "格式示例：将“上周三，也就是六月三号，我上午九点零五分参加了第二次产品评审，讨论了三个方案、十二条反馈和百分之十五的预算调整。下午，我把Meeting Notes发给了Alice，晚上八点半又确认了一遍OKR”输出为“上周三，也就是6月3号，我上午9:05参加了第2次产品评审，讨论了3个方案、12条反馈和15%的预算调整。下午，我把Meeting Notes发给了Alice，晚上8:30又确认了一遍OKR”。";
 
 pub fn build_prompt_context(
     vocabulary: &[VocabularyItem],
@@ -100,10 +100,16 @@ mod tests {
         assert!(prompt.contains("Kunlun"));
         assert!(prompt.contains("昆仑"));
         assert!(prompt.contains("整理为简洁书面语"));
-        assert!(prompt.contains("5月20号"));
-        assert!(prompt.contains("5:30"));
-        assert!(prompt.contains("3个景点"));
-        assert!(prompt.contains("happy"));
+        assert!(prompt.contains("6月3号"));
+        assert!(prompt.contains("9:05"));
+        assert!(prompt.contains("第2次"));
+        assert!(prompt.contains("3个方案"));
+        assert!(prompt.contains("12条反馈"));
+        assert!(prompt.contains("15%"));
+        assert!(prompt.contains("Meeting Notes"));
+        assert!(prompt.contains("Alice"));
+        assert!(prompt.contains("8:30"));
+        assert!(prompt.contains("OKR"));
         assert!(prompt.contains("昨天讨论 Kunlun"));
         assert!(!prompt.contains("disabled"));
     }

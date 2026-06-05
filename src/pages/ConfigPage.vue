@@ -22,10 +22,10 @@ const emit = defineEmits<{
 }>();
 
 const providerForm = reactive<ProviderConfig>({
-  id: 0, provider: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5', apiKeyRef: 'credential-manager:mimo', enabled: true,
+  id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: true,
 });
 const selectedProviderId = ref<number | null>(null);
-const hotkey = ref('Ctrl+Space');
+const hotkey = ref('Alt');
 const recordingHotkey = ref(false);
 const pendingModifierHotkey = ref<string | null>(null);
 let hotkeyCaptureTimer: ReturnType<typeof window.setTimeout> | null = null;
@@ -65,8 +65,14 @@ function saveProvider() {
   emit('saveProvider', provider);
 }
 function saveHotkey() {
-  const provider = activeProvider.value ?? providerForm;
-  emit('save', { provider: provider.provider, baseUrl: provider.baseUrl, model: provider.model, apiKeyRef: provider.apiKeyRef, hotkey: hotkey.value });
+  const provider = activeProvider.value;
+  emit('save', {
+    provider: provider?.provider ?? '',
+    baseUrl: provider?.baseUrl ?? '',
+    model: provider?.model ?? '',
+    apiKeyRef: provider?.apiKeyRef ?? '',
+    hotkey: hotkey.value,
+  });
 }
 function recordHotkey(event: KeyboardEvent) {
   if (!recordingHotkey.value) return;
@@ -248,7 +254,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* =========== 基础组件解耦注入 (替换原styles.css依赖) =========== */
-.page-stack { display: flex; flex-direction: column; gap: 36px; padding-bottom: 40px; }
+.page-stack { display: flex; flex-direction: column; gap: 24px; min-height: 0; height: 100%; overflow: hidden; }
 :deep(.custom-glass-panel) { background: #ffffff; border-radius: 20px; border: 1px solid rgba(0,0,0,0.03); box-shadow: 0 8px 32px -8px rgba(15,143,131,0.06); padding: 24px; }
 :deep(.custom-glass-panel .ui-panel-header) { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(0,0,0,0.04); padding-bottom: 16px; margin-bottom: 24px; }
 :deep(.provider-unified-panel.custom-glass-panel) { padding: 20px; }
@@ -274,13 +280,13 @@ input:focus, textarea:focus { border-color: #0f8f83; background: #fff; box-shado
 label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-weight: 600; color: #62706c; }
 
 /* =========== 页面专属结构重塑 =========== */
-.config-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 20px; align-items: start; }
+.config-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 20px; align-items: stretch; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 @media (max-width: 900px) { .config-workspace { grid-template-columns: 1fr; } }
-.provider-unified-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; min-height: 400px; }
+.provider-unified-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 @media (max-width: 768px) { .provider-unified-grid { grid-template-columns: 1fr; } }
 
 /* 导航栏 */
-.provider-list { display: flex; flex-direction: column; gap: 8px; border-right: 1px dashed rgba(0,0,0,0.08); padding-right: 14px; }
+.provider-list { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; border-right: 1px dashed rgba(0,0,0,0.08); padding-right: 14px; scrollbar-gutter: stable; }
 .provider-list-item {
   width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 14px 14px;
   background: transparent; border-radius: 12px; text-align: left; border: none; transition: all 0.2s;
@@ -295,7 +301,7 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .status-dot.disabled { background: #d1d1d6; box-shadow: none; }
 
 /* 模板按钮 */
-.provider-editor { display: flex; flex-direction: column; }
+.provider-editor { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .template-grid { display: flex; gap: 10px; margin-bottom: 18px; }
 .template-button {
   display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 20px;
@@ -312,7 +318,7 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .item-actions { display: flex; gap: 12px; }
 
 /* 快捷键艺术录制区 */
-.config-side-stack { display: flex; flex-direction: column; gap: 16px; }
+.config-side-stack { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; }
 :deep(.hotkey-panel.custom-glass-panel) { padding: 18px; }
 :deep(.hotkey-panel.custom-glass-panel .ui-panel-header) { padding-bottom: 14px; margin-bottom: 18px; }
 .hotkey-recorder {

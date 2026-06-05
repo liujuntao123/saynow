@@ -20,7 +20,7 @@ cd src-tauri && cargo test
 - 文本自动写入
 - Windows 安装包构建
 
-WSL 中可以验证前端界面、领域逻辑、SQLite 持久化、Provider payload/response 处理和模拟识别闭环。
+WSL 中可以验证前端界面、领域逻辑、SQLite 持久化、Provider payload/response 处理和错误记录闭环。
 
 ## Windows 验证清单
 

@@ -55,6 +55,10 @@ export interface StylePrompt {
   enabled: boolean;
 }
 
+export interface PersonalizationPreferences {
+  removeTrailingPeriod: boolean;
+}
+
 export interface DashboardData {
   stats: UsageStats;
   records: RecognitionRecord[];

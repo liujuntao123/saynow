@@ -20,9 +20,11 @@ import {
   saveProviderConfig,
   deleteProviderConfig,
   selectProviderConfig,
+  getPersonalizationPreferences,
   setHotkeyMonitor,
   setRecorderOverlayPosition,
   showRecorderOverlayNoActivate,
+  savePersonalizationPreferences,
   updateStylePrompt,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
@@ -33,7 +35,15 @@ import DataPage from './pages/DataPage.vue';
 import FeedbackPage from './pages/FeedbackPage.vue';
 import HomePage from './pages/HomePage.vue';
 import PersonalizationPage from './pages/PersonalizationPage.vue';
-import type { AppConfig, DashboardData, ProviderConfig, RecognitionRecord, StylePrompt, VocabularyItem } from './types';
+import type {
+  AppConfig,
+  DashboardData,
+  PersonalizationPreferences,
+  ProviderConfig,
+  RecognitionRecord,
+  StylePrompt,
+  VocabularyItem,
+} from './types';
 
 const activePage = ref('home');
 const dashboard = ref<DashboardData | null>(null);
@@ -42,6 +52,7 @@ const providers = ref<ProviderConfig[]>([]);
 const records = ref<RecognitionRecord[]>([]);
 const vocabulary = ref<VocabularyItem[]>([]);
 const styles = ref<StylePrompt[]>([]);
+const personalizationPreferences = ref<PersonalizationPreferences>({ removeTrailingPeriod: false });
 const busy = ref(false);
 const saving = ref(false);
 const hotkeyRecording = ref(false);
@@ -79,12 +90,14 @@ async function refreshAll() {
   records.value = await listRecords();
   vocabulary.value = await listVocabulary();
   styles.value = await listStylePrompts();
+  personalizationPreferences.value = await getPersonalizationPreferences();
   debugLog('app data refreshed', {
     hotkey: config.value.hotkey,
     providers: providers.value.length,
     records: records.value.length,
     vocabulary: vocabulary.value.length,
     styles: styles.value.length,
+    removeTrailingPeriod: personalizationPreferences.value.removeTrailingPeriod,
   });
 }
 
@@ -361,6 +374,11 @@ async function removeStyle(id: number) {
   await refreshAll();
 }
 
+async function savePersonalizationPreferenceSettings(preferences: PersonalizationPreferences) {
+  personalizationPreferences.value = await savePersonalizationPreferences(preferences);
+  await refreshAll();
+}
+
 watch(
   () => config.value?.hotkey,
   (hotkey) => {
@@ -434,11 +452,13 @@ onBeforeUnmount(() => {
       v-else-if="currentPage === 'personalization'"
       :vocabulary="vocabulary"
       :styles="styles"
+      :preferences="personalizationPreferences"
       @add-vocabulary-terms="createVocabularyTerms"
       @delete-vocabulary="removeVocabulary"
       @add-style="createStyle"
       @update-style="saveStyle"
       @delete-style="removeStyle"
+      @update-preferences="savePersonalizationPreferenceSettings"
     />
     <FeedbackPage v-else />
   </AppShell>

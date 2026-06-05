@@ -4,7 +4,9 @@ use chrono::Utc;
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem};
+use crate::models::{
+    PersonalizationPreferences, RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
+};
 
 pub struct AppDb {
     conn: Mutex<Connection>,
@@ -34,11 +36,11 @@ pub struct ProviderConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            provider: "MiMo".to_string(),
-            base_url: "https://api.xiaomimimo.com/v1".to_string(),
-            model: "mimo-v2.5".to_string(),
-            api_key_ref: "credential-manager:mimo".to_string(),
-            hotkey: "Ctrl+Space".to_string(),
+            provider: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            api_key_ref: String::new(),
+            hotkey: "Alt".to_string(),
         }
     }
 }
@@ -108,27 +110,13 @@ impl AppDb {
                 prompt TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS personalization_preferences (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                remove_trailing_period INTEGER NOT NULL DEFAULT 0
+            );
             "#,
         )?;
-        let provider_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM provider_configs", [], |row| {
-                row.get(0)
-            })?;
-        if provider_count == 0 {
-            let config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
-            conn.execute(
-                r#"
-                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled)
-                VALUES (?1, ?2, ?3, ?4, 1)
-                "#,
-                params![
-                    config.provider,
-                    config.base_url,
-                    config.model,
-                    config.api_key_ref
-                ],
-            )?;
-        }
         Ok(())
     }
 
@@ -147,7 +135,9 @@ impl AppDb {
     pub fn save_config(&self, config: &AppConfig) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         Self::save_config_from_conn(&conn, config)?;
-        Self::upsert_provider_from_config(&conn, config)?;
+        if config.has_complete_provider() {
+            Self::upsert_provider_from_config(&conn, config)?;
+        }
         Ok(())
     }
 
@@ -244,6 +234,13 @@ impl AppDb {
             config.base_url = provider.base_url;
             config.model = provider.model;
             config.api_key_ref = provider.api_key_ref;
+            Self::save_config_from_conn(&conn, &config)?;
+        } else {
+            let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
+            config.provider.clear();
+            config.base_url.clear();
+            config.model.clear();
+            config.api_key_ref.clear();
             Self::save_config_from_conn(&conn, &config)?;
         }
         Ok(())
@@ -418,6 +415,43 @@ impl AppDb {
     pub fn delete_style_prompt(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         conn.execute("DELETE FROM style_prompts WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn get_personalization_preferences(&self) -> Result<PersonalizationPreferences> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let result = conn.query_row(
+            "SELECT remove_trailing_period FROM personalization_preferences WHERE id = 1",
+            [],
+            |row| {
+                Ok(PersonalizationPreferences {
+                    remove_trailing_period: row.get::<_, i64>(0)? == 1,
+                })
+            },
+        );
+        match result {
+            Ok(preferences) => Ok(preferences),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                Ok(PersonalizationPreferences::default())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn save_personalization_preferences(
+        &self,
+        preferences: &PersonalizationPreferences,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            r#"
+            INSERT INTO personalization_preferences (id, remove_trailing_period)
+            VALUES (1, ?1)
+            ON CONFLICT(id) DO UPDATE SET
+                remove_trailing_period = excluded.remove_trailing_period
+            "#,
+            [if preferences.remove_trailing_period { 1 } else { 0 }],
+        )?;
         Ok(())
     }
 
@@ -628,6 +662,24 @@ impl AppDb {
             Self::normalize_enabled_provider_configs(conn)?;
         }
         Ok(())
+    }
+}
+
+impl AppConfig {
+    pub fn has_complete_provider(&self) -> bool {
+        !self.provider.trim().is_empty()
+            && !self.base_url.trim().is_empty()
+            && !self.model.trim().is_empty()
+            && !self.api_key_ref.trim().is_empty()
+    }
+}
+
+impl ProviderConfig {
+    pub fn has_complete_provider(&self) -> bool {
+        !self.provider.trim().is_empty()
+            && !self.base_url.trim().is_empty()
+            && !self.model.trim().is_empty()
+            && !self.api_key_ref.trim().is_empty()
     }
 }
 

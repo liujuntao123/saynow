@@ -18,10 +18,10 @@ describe('buildPromptPreview', () => {
     expect(prompt).toContain('Kunlun');
     expect(prompt).toContain('昆仑');
     expect(prompt).toContain('整理为简洁书面语');
-    expect(prompt).toContain('5月20号');
-    expect(prompt).toContain('5:30');
-    expect(prompt).toContain('3个景点');
-    expect(prompt).toContain('happy');
+    expect(prompt).toContain('6月3号');
+    expect(prompt).toContain('9:05');
+    expect(prompt).toContain('第2次');
+    expect(prompt).toContain('15%');
     expect(prompt).toContain('昨天讨论 Kunlun 模型导出');
     expect(prompt).not.toContain('unused');
     expect(prompt).not.toContain('失败记录');

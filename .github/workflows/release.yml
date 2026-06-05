@@ -41,13 +41,26 @@ jobs:
         run: cargo test
 
       - name: Build and publish Tauri release
+        if: github.ref_type == 'tag'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          tagName: ${{ github.ref_name }}
           releaseName: "saynow v__VERSION__"
           releaseBody: "Windows 安装包见本 Release 附件。"
           releaseDraft: false
           prerelease: false
           args: --features desktop
+
+      - name: Build Tauri bundle
+        if: github.ref_type != 'tag'
+        run: npm run tauri -- build --features desktop
+
+      - name: Upload Windows bundle
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: saynow-windows-${{ github.sha }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error

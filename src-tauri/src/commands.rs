@@ -207,7 +207,24 @@ where
         Err(error) => return insert_failed_record(db, &error, input.duration_seconds.max(1)),
     };
 
-    let injection_error = inject_text(&text).err();
+    persist_recognized_text(db, text, input.duration_seconds, inject_text)
+}
+
+fn persist_recognized_text<F>(
+    db: &AppDb,
+    text: String,
+    duration_seconds: u32,
+    inject: F,
+) -> Result<RecognitionRecord, String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let duration_seconds = duration_seconds.max(1);
+    if text.trim().is_empty() {
+        return insert_cancelled_record(db, "未识别到可插入文本，已取消插入。", duration_seconds);
+    }
+
+    let injection_error = inject(&text).err();
     if let Some(error) = injection_error.as_deref() {
         eprintln!("[saynow] text injection failed: {error}");
     } else {
@@ -215,7 +232,7 @@ where
     }
     db.insert_record_with_error(
         &text,
-        input.duration_seconds.max(1),
+        duration_seconds,
         RecognitionStatus::Success,
         injection_error.as_deref(),
     )
@@ -333,6 +350,22 @@ fn insert_failed_record(
         .map_err(|db_error| db_error.to_string())?;
     let _ = latest_record(db)?;
     Err(error.to_string())
+}
+
+fn insert_cancelled_record(
+    db: &AppDb,
+    message: &str,
+    duration_seconds: u32,
+) -> Result<RecognitionRecord, String> {
+    eprintln!("[saynow] recognize_audio cancelled: {message}");
+    db.insert_record_with_error(
+        "",
+        duration_seconds,
+        RecognitionStatus::Failed,
+        Some(message),
+    )
+    .map_err(|error| error.to_string())?;
+    latest_record(db)
 }
 
 fn latest_record(db: &AppDb) -> Result<RecognitionRecord, String> {
@@ -682,5 +715,27 @@ mod tests {
         assert!(error.contains("环境变量 SAYNOW_MIMO_API_KEY 未设置"));
         assert_eq!(records[0].status, RecognitionStatus::Failed);
         assert_eq!(records[0].duration_seconds, 2);
+    }
+
+    #[test]
+    fn empty_recognition_text_cancels_insertion_without_injecting() {
+        let db = AppDb::in_memory().unwrap();
+        let mut injected = false;
+
+        let record = persist_recognized_text(&db, " \n\t ".to_string(), 0, |_| {
+            injected = true;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(!injected);
+        assert_eq!(record.status, RecognitionStatus::Failed);
+        assert_eq!(record.text, "");
+        assert_eq!(record.duration_seconds, 1);
+        assert!(record
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("已取消插入"));
     }
 }

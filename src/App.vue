@@ -50,7 +50,14 @@ const holdHotkeyController = shallowRef<ReturnType<typeof createHoldHotkeyContro
 const audioRecorder = createAudioRecorder();
 let recordingStartPromise: Promise<void> | null = null;
 let unlistenModifierHotkey: (() => void) | null = null;
-const RECORDER_OVERLAY_SIZE = { width: 256, height: 52 };
+let recordingGuardTimer: ReturnType<typeof window.setTimeout> | null = null;
+let hotkeyMonitorRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
+let modifierHotkeyListenRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
+let mounted = false;
+const RECORDER_OVERLAY_SIZE = { width: 760, height: 52 };
+const MAX_HOTKEY_RECORDING_MS = 120_000;
+const HOTKEY_MONITOR_RETRY_MS = 1500;
+const MODIFIER_EVENT_LISTEN_RETRY_MS = 1500;
 
 const currentPage = computed(() => activePage.value);
 const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
@@ -85,13 +92,15 @@ function startHotkeyRecording() {
   if (busy.value || hotkeyRecording.value) return;
   debugLog('hotkey pressed; starting recording');
   hotkeyRecording.value = true;
+  armRecordingGuard();
   recordingStartPromise = beginRecording();
 }
 
-async function stopHotkeyRecording() {
+async function stopHotkeyRecording(reason = 'hotkey released') {
   if (!hotkeyRecording.value) return;
-  debugLog('hotkey released; stopping recording');
+  debugLog(`${reason}; stopping recording`);
   hotkeyRecording.value = false;
+  clearRecordingGuard();
   await finishRecording();
 }
 
@@ -105,6 +114,26 @@ function handleRuntimeKeyUp(event: KeyboardEvent) {
   if (isTauriRuntime) return;
   if (!runtimeHotkeyEnabled.value) return;
   holdHotkeyController.value?.handleKeyUp(event);
+}
+
+function handleRuntimeReset() {
+  if (isTauriRuntime) return;
+  holdHotkeyController.value?.cancel();
+}
+
+function armRecordingGuard() {
+  clearRecordingGuard();
+  recordingGuardTimer = window.setTimeout(() => {
+    debugLog('hotkey recording exceeded watchdog timeout; forcing stop', { maxMs: MAX_HOTKEY_RECORDING_MS });
+    void stopHotkeyRecording('hotkey watchdog timeout');
+    void resetNativeHotkeyMonitor('recording watchdog timeout');
+  }, MAX_HOTKEY_RECORDING_MS);
+}
+
+function clearRecordingGuard() {
+  if (!recordingGuardTimer) return;
+  window.clearTimeout(recordingGuardTimer);
+  recordingGuardTimer = null;
 }
 
 async function persistConfig(nextConfig: AppConfig) {
@@ -165,9 +194,11 @@ async function beginRecording() {
     debugLog('microphone recording started');
   } catch (error) {
     hotkeyRecording.value = false;
+    clearRecordingGuard();
     await hideRecorderOverlay();
     await refreshAll();
     console.error('[saynow] failed to start recording', error);
+    void resetNativeHotkeyMonitor('recording start failed');
   }
 }
 
@@ -194,6 +225,7 @@ async function finishRecording() {
     return;
   } finally {
     busy.value = false;
+    recordingStartPromise = null;
   }
   await hideRecorderOverlay();
 }
@@ -234,6 +266,7 @@ async function resolveRecorderMonitor(): Promise<Monitor | null> {
 
 async function registerRuntimeHotkey(hotkey?: string) {
   if (!isTauriRuntime) return;
+  clearHotkeyMonitorRetry();
   await setHotkeyMonitor(null).catch((error) => console.error('[saynow] failed to stop hotkey monitor', error));
   if (!hotkey || configuringHotkey.value) {
     debugLog('runtime hotkey disabled', { hotkey, configuringHotkey: configuringHotkey.value });
@@ -242,7 +275,65 @@ async function registerRuntimeHotkey(hotkey?: string) {
 
   const parts = toHotkeyParts(hotkey);
   debugLog('using native hotkey monitor', { hotkey, parts });
-  await setHotkeyMonitor(parts);
+  try {
+    await setHotkeyMonitor(parts);
+  } catch (error) {
+    console.error('[saynow] failed to start hotkey monitor', error);
+    scheduleHotkeyMonitorRetry();
+  }
+}
+
+function scheduleHotkeyMonitorRetry() {
+  if (!mounted || hotkeyMonitorRetryTimer || !runtimeHotkeyEnabled.value || !config.value?.hotkey) return;
+  hotkeyMonitorRetryTimer = window.setTimeout(() => {
+    hotkeyMonitorRetryTimer = null;
+    void registerRuntimeHotkey(config.value?.hotkey);
+  }, HOTKEY_MONITOR_RETRY_MS);
+}
+
+function clearHotkeyMonitorRetry() {
+  if (!hotkeyMonitorRetryTimer) return;
+  window.clearTimeout(hotkeyMonitorRetryTimer);
+  hotkeyMonitorRetryTimer = null;
+}
+
+async function resetNativeHotkeyMonitor(reason: string) {
+  if (!isTauriRuntime || !runtimeHotkeyEnabled.value || !config.value?.hotkey) return;
+  debugLog('resetting native hotkey monitor', { reason });
+  await registerRuntimeHotkey(config.value.hotkey);
+}
+
+function subscribeModifierHotkeyEvents() {
+  if (!isTauriRuntime || !mounted) return;
+  clearModifierHotkeyListenRetry();
+  void listen<{ state: 'Pressed' | 'Released' }>('modifier-hotkey-state', (event) => {
+    debugLog('modifier hotkey event', event.payload);
+    if (event.payload.state === 'Pressed') startHotkeyRecording();
+    if (event.payload.state === 'Released') {
+      void stopHotkeyRecording();
+    }
+  })
+    .then((unlisten) => {
+      unlistenModifierHotkey = unlisten;
+    })
+    .catch((error) => {
+      console.error('[saynow] failed to listen modifier hotkey state', error);
+      scheduleModifierHotkeyListenRetry();
+    });
+}
+
+function scheduleModifierHotkeyListenRetry() {
+  if (!mounted || modifierHotkeyListenRetryTimer) return;
+  modifierHotkeyListenRetryTimer = window.setTimeout(() => {
+    modifierHotkeyListenRetryTimer = null;
+    subscribeModifierHotkeyEvents();
+  }, MODIFIER_EVENT_LISTEN_RETRY_MS);
+}
+
+function clearModifierHotkeyListenRetry() {
+  if (!modifierHotkeyListenRetryTimer) return;
+  window.clearTimeout(modifierHotkeyListenRetryTimer);
+  modifierHotkeyListenRetryTimer = null;
 }
 
 async function createVocabularyTerms(terms: string[]) {
@@ -287,6 +378,7 @@ watch(
 
 watch(configuringHotkey, (recording) => {
   if (recording) {
+    handleRuntimeReset();
     void registerRuntimeHotkey(undefined);
   } else {
     void registerRuntimeHotkey(config.value?.hotkey);
@@ -294,27 +386,27 @@ watch(configuringHotkey, (recording) => {
 });
 
 onMounted(() => {
+  mounted = true;
   window.addEventListener('keydown', handleRuntimeKeyDown, true);
   window.addEventListener('keyup', handleRuntimeKeyUp, true);
-  if (isTauriRuntime) {
-    void listen<{ state: 'Pressed' | 'Released' }>('modifier-hotkey-state', (event) => {
-      debugLog('modifier hotkey event', event.payload);
-      if (event.payload.state === 'Pressed') startHotkeyRecording();
-      if (event.payload.state === 'Released') {
-        void stopHotkeyRecording();
-      }
-    }).then((unlisten) => {
-      unlistenModifierHotkey = unlisten;
-    });
-  }
+  window.addEventListener('blur', handleRuntimeReset);
+  document.addEventListener('visibilitychange', handleRuntimeReset);
+  subscribeModifierHotkeyEvents();
   void refreshAll()
     .then(() => registerRuntimeHotkey(config.value?.hotkey))
     .catch((error) => console.error('[saynow] failed to initialize app runtime', error));
 });
 
 onBeforeUnmount(() => {
+  mounted = false;
   window.removeEventListener('keydown', handleRuntimeKeyDown, true);
   window.removeEventListener('keyup', handleRuntimeKeyUp, true);
+  window.removeEventListener('blur', handleRuntimeReset);
+  document.removeEventListener('visibilitychange', handleRuntimeReset);
+  clearRecordingGuard();
+  clearHotkeyMonitorRetry();
+  clearModifierHotkeyListenRetry();
+  handleRuntimeReset();
   unlistenModifierHotkey?.();
   void setHotkeyMonitor(null).catch(() => undefined);
 });

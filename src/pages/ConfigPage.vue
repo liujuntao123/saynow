@@ -28,6 +28,8 @@ const selectedProviderId = ref<number | null>(null);
 const hotkey = ref('Ctrl+Space');
 const recordingHotkey = ref(false);
 const pendingModifierHotkey = ref<string | null>(null);
+let hotkeyCaptureTimer: ReturnType<typeof window.setTimeout> | null = null;
+const HOTKEY_CAPTURE_TIMEOUT_MS = 15_000;
 
 const templates = [
   { id: 'mimo', label: 'MiMo', provider: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5', apiKeyRef: 'credential-manager:mimo' },
@@ -69,25 +71,64 @@ function saveHotkey() {
 function recordHotkey(event: KeyboardEvent) {
   if (!recordingHotkey.value) return;
   event.preventDefault(); event.stopPropagation();
-  if (event.key === 'Escape') { recordingHotkey.value = false; return; }
+  if (event.key === 'Escape') { stopHotkeyCapture(); return; }
   const nextHotkey = formatHotkey(event);
   if (!nextHotkey) return;
   if (isModifierOnlyHotkey(nextHotkey)) { pendingModifierHotkey.value = nextHotkey; return; }
-  hotkey.value = nextHotkey; pendingModifierHotkey.value = null; recordingHotkey.value = false;
+  hotkey.value = nextHotkey; pendingModifierHotkey.value = null; stopHotkeyCapture();
 }
 function finishModifierHotkey(event: KeyboardEvent) {
   if (!recordingHotkey.value || !pendingModifierHotkey.value) return;
   event.preventDefault(); event.stopPropagation();
-  hotkey.value = pendingModifierHotkey.value; pendingModifierHotkey.value = null; recordingHotkey.value = false;
+  hotkey.value = pendingModifierHotkey.value; pendingModifierHotkey.value = null; stopHotkeyCapture();
+}
+function startHotkeyCapture() {
+  recordingHotkey.value = true;
+}
+function stopHotkeyCapture() {
+  recordingHotkey.value = false;
+}
+function handleCaptureReset() {
+  if (recordingHotkey.value) stopHotkeyCapture();
+}
+function armHotkeyCaptureTimer() {
+  clearHotkeyCaptureTimer();
+  hotkeyCaptureTimer = window.setTimeout(stopHotkeyCapture, HOTKEY_CAPTURE_TIMEOUT_MS);
+}
+function clearHotkeyCaptureTimer() {
+  if (!hotkeyCaptureTimer) return;
+  window.clearTimeout(hotkeyCaptureTimer);
+  hotkeyCaptureTimer = null;
 }
 
 watch(recordingHotkey, (recording) => {
   emit('hotkeyRecordingChange', recording);
-  if (recording) { window.addEventListener('keydown', recordHotkey, true); window.addEventListener('keyup', finishModifierHotkey, true); }
-  else { window.removeEventListener('keydown', recordHotkey, true); window.removeEventListener('keyup', finishModifierHotkey, true); pendingModifierHotkey.value = null; }
+  if (recording) {
+    armHotkeyCaptureTimer();
+    window.addEventListener('keydown', recordHotkey, true);
+    window.addEventListener('keyup', finishModifierHotkey, true);
+    window.addEventListener('blur', handleCaptureReset);
+    document.addEventListener('visibilitychange', handleCaptureReset);
+  }
+  else {
+    clearHotkeyCaptureTimer();
+    window.removeEventListener('keydown', recordHotkey, true);
+    window.removeEventListener('keyup', finishModifierHotkey, true);
+    window.removeEventListener('blur', handleCaptureReset);
+    document.removeEventListener('visibilitychange', handleCaptureReset);
+    pendingModifierHotkey.value = null;
+  }
 }, { flush: 'sync' });
 
-onBeforeUnmount(() => { window.removeEventListener('keydown', recordHotkey, true); window.removeEventListener('keyup', finishModifierHotkey, true); });
+onBeforeUnmount(() => {
+  stopHotkeyCapture();
+  clearHotkeyCaptureTimer();
+  window.removeEventListener('keydown', recordHotkey, true);
+  window.removeEventListener('keyup', finishModifierHotkey, true);
+  window.removeEventListener('blur', handleCaptureReset);
+  document.removeEventListener('visibilitychange', handleCaptureReset);
+  emit('hotkeyRecordingChange', false);
+});
 </script>
 
 <template>
@@ -193,9 +234,9 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', recordHotkey, true
             <div class="recorder-halo"></div>
             <span>{{ recordingHotkey ? '请按下按键...' : hotkey || '未设置' }}</span>
             <div class="hotkey-actions">
-              <button class="secondary-button icon-only-button" type="button" @click="recordingHotkey = true"><AppIcon name="keyboard" /></button>
+              <button class="secondary-button icon-only-button" type="button" @click="startHotkeyCapture"><AppIcon name="keyboard" /></button>
               <button class="ghost-button icon-only-button" type="button" @click="hotkey = ''"><AppIcon name="trash" /></button>
-              <button v-if="recordingHotkey" class="ghost-button icon-only-button" type="button" @click="recordingHotkey = false"><AppIcon name="x" /></button>
+              <button v-if="recordingHotkey" class="ghost-button icon-only-button" type="button" @click="stopHotkeyCapture"><AppIcon name="x" /></button>
               <button class="primary-button icon-only-button" type="button" :disabled="saving" @click="saveHotkey"><AppIcon name="save" /></button>
             </div>
           </div>

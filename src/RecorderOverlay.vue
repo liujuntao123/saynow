@@ -75,7 +75,8 @@ onBeforeUnmount(() => {
   box-shadow: none !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-  width: max-content !important;
+  width: fit-content !important;
+  max-width: 100vw !important;
   height: max-content !important;
   padding: 12px !important;
 }
@@ -200,7 +201,7 @@ onBeforeUnmount(() => {
 }
 
 .morph-hud.has-transcript .hud-strip {
-  max-width: 320px;
+  max-width: calc(100vw - 108px);
   opacity: 1;
   transform: scaleX(1);
   padding: 0 16px 0 28px;
@@ -209,17 +210,24 @@ onBeforeUnmount(() => {
 .strip-content {
   display: flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   white-space: nowrap;
   -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
   mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
 }
 
 .strip-text {
+  display: block;
+  min-width: 0;
   font-size: 14px;
   font-weight: 650;
   color: #0f172a;
   letter-spacing: 0;
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.95);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .strip-cursor {

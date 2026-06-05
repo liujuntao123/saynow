@@ -11,7 +11,7 @@ pub fn run() {
     use tauri::{
         menu::MenuBuilder,
         tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-        WindowEvent,
+        Manager, WindowEvent,
     };
 
     let db_path = std::env::current_dir()
@@ -23,7 +23,14 @@ pub fn run() {
         .manage(db)
         .invoke_handler(commands::handlers())
         .setup(|app| {
-            create_recorder_window(app)?;
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                allow_microphone_permission(&window)?;
+            }
+
+            let recorder_window = create_recorder_window(app)?;
+            #[cfg(target_os = "windows")]
+            allow_microphone_permission(&recorder_window)?;
 
             let menu = MenuBuilder::new(app)
                 .text("show", "显示主窗口")
@@ -77,7 +84,7 @@ fn create_recorder_window<R: tauri::Runtime>(
         tauri::WebviewUrl::App("index.html?view=recorder".into()),
     )
     .title("说文录音")
-    .inner_size(256.0, 52.0)
+    .inner_size(760.0, 52.0)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -100,6 +107,55 @@ fn create_recorder_window<R: tauri::Runtime>(
     }
 
     Ok(window)
+}
+
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+fn allow_microphone_permission<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), tauri::Error> {
+    window.with_webview(|webview| {
+        use webview2_com::{
+            Microsoft::Web::WebView2::Win32::{
+                COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            },
+            PermissionRequestedEventHandler,
+        };
+
+        unsafe {
+            let webview = match webview.controller().CoreWebView2() {
+                Ok(webview) => webview,
+                Err(error) => {
+                    eprintln!("[saynow] failed to get WebView2 for microphone permission: {error}");
+                    return;
+                }
+            };
+
+            let mut token = 0;
+            if let Err(error) = webview.add_PermissionRequested(
+                &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                    args.PermissionKind(&mut kind)?;
+                    if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                        args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                    }
+
+                    Ok(())
+                })),
+                &mut token,
+            ) {
+                eprintln!(
+                    "[saynow] failed to install WebView2 microphone permission handler: {error}"
+                );
+            }
+        }
+    })?;
+
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]

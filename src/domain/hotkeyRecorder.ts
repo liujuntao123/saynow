@@ -86,6 +86,9 @@ export function createHoldHotkeyController(hotkey: string, handlers: HoldHotkeyH
   let active = false;
 
   return {
+    get active() {
+      return active;
+    },
     handleKeyDown(event: KeyboardEvent) {
       if (active || event.repeat || !eventMatchesHotkey(event, hotkey)) return;
       active = true;
@@ -93,6 +96,11 @@ export function createHoldHotkeyController(hotkey: string, handlers: HoldHotkeyH
     },
     handleKeyUp(event: KeyboardEvent) {
       if (!active || !eventReleasesHotkey(event, hotkey)) return;
+      active = false;
+      handlers.onStop();
+    },
+    cancel() {
+      if (!active) return;
       active = false;
       handlers.onStop();
     },

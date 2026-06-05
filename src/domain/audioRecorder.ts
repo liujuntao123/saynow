@@ -38,20 +38,30 @@ export function createAudioRecorder() {
 
       if (!stopPromise) {
         const recorder = mediaRecorder;
-        stopPromise = new Promise<RecordedAudio>((resolve) => {
+        stopPromise = new Promise<RecordedAudio>((resolve, reject) => {
           recorder.addEventListener(
             'stop',
             async () => {
-              const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-              const durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-              const wavBlob = await convertBlobToWav(blob);
-              const audioBase64 = await blobToBase64(wavBlob);
-              cleanup();
-              resolve({ audioBase64, durationSeconds, mimeType: wavBlob.type });
+              try {
+                const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+                const durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+                const wavBlob = await convertBlobToWav(blob);
+                const audioBase64 = await blobToBase64(wavBlob);
+                resolve({ audioBase64, durationSeconds, mimeType: wavBlob.type });
+              } catch (error) {
+                reject(error);
+              } finally {
+                cleanup();
+              }
             },
             { once: true },
           );
-          recorder.stop();
+          try {
+            recorder.stop();
+          } catch (error) {
+            cleanup();
+            reject(error);
+          }
         });
       }
 

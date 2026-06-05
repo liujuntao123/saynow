@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "saynow"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2749,6 +2749,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "thiserror 2.0.18",
+ "webview2-com",
  "windows",
 ]
 

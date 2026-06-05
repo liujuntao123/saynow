@@ -29,6 +29,11 @@ pub fn current_platform_status() -> PlatformStatus {
 }
 
 pub fn inject_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        eprintln!("[saynow] skipped text injection for empty text");
+        return Ok(());
+    }
+
     platform_impl::inject_text(text)
 }
 
@@ -90,22 +95,26 @@ mod platform_impl {
             mpsc, Mutex, OnceLock,
         },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use tauri::{Emitter, Manager};
 
+    use windows::core::w;
     use windows::Win32::{
-        Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM},
         System::{
-            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            DataExchange::{
+                CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+                OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+            },
             Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
             Threading::{AttachThreadInput, GetCurrentThreadId},
         },
         UI::Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-            VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU,
-            VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_V,
+            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+            KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+            VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_V,
         },
         UI::WindowsAndMessaging::{
             BringWindowToTop, CallNextHookEx, DispatchMessageW, GetForegroundWindow,
@@ -121,6 +130,10 @@ mod platform_impl {
     use crate::platform::ModifierHotkeyEvent;
 
     const CF_UNICODETEXT: u32 = 13;
+    const KEY_DOWN_MASK: i16 = i16::MIN;
+    const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(20);
+    const HOTKEY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+    const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
     static MONITOR: OnceLock<Mutex<Option<ModifierHotkeyMonitor>>> = OnceLock::new();
     static HOOK_CONTEXT: OnceLock<Mutex<Option<HookContext>>> = OnceLock::new();
     static INPUT_TARGET: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
@@ -134,6 +147,7 @@ mod platform_impl {
         hotkey: HotkeySpec,
         pressed: HashSet<ModifierKey>,
         active: bool,
+        release_miss_count: u8,
         emit_state: Box<dyn Fn(&str) + Send + Sync>,
         should_stop: AtomicBool,
     }
@@ -154,11 +168,25 @@ mod platform_impl {
 
     pub fn inject_text(text: &str) -> Result<(), String> {
         eprintln!("[saynow] injecting text; chars={}", text.chars().count());
-        set_clipboard_text(text)?;
+        let previous_clipboard_text = get_clipboard_text().unwrap_or_else(|error| {
+            eprintln!("[saynow] failed to snapshot clipboard text before injection: {error}");
+            None
+        });
+        set_clipboard_text(text, true)?;
         thread::sleep(Duration::from_millis(80));
         restore_input_target();
         thread::sleep(Duration::from_millis(40));
-        paste_from_clipboard()
+        let paste_result = paste_from_clipboard();
+        if paste_result.is_ok() {
+            let restore_result = match previous_clipboard_text {
+                Some(previous_text) => set_clipboard_text(&previous_text, true),
+                None => clear_clipboard(true),
+            };
+            if let Err(error) = restore_result {
+                eprintln!("[saynow] failed to restore clipboard after injection: {error}");
+            }
+        }
+        paste_result
     }
 
     pub fn remember_input_target() -> Result<(), String> {
@@ -324,15 +352,29 @@ mod platform_impl {
         hotkey: HotkeySpec,
         stop_rx: mpsc::Receiver<()>,
     ) {
-        if let Err(error) = install_hotkey_hook(app, hotkey, stop_rx) {
-            eprintln!("[saynow] native hotkey monitor failed: {error}");
+        loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+
+            if let Err(error) = install_hotkey_hook(app.clone(), hotkey.clone(), &stop_rx) {
+                eprintln!("[saynow] native hotkey monitor failed: {error}; retrying");
+                clear_hook_context();
+                if stop_rx.try_recv().is_ok() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1000));
+                continue;
+            }
+
+            break;
         }
     }
 
     fn install_hotkey_hook<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
         hotkey: HotkeySpec,
-        stop_rx: mpsc::Receiver<()>,
+        stop_rx: &mpsc::Receiver<()>,
     ) -> Result<(), String> {
         let emit_app = app.clone();
         let emit_state = Box::new(move |state: &str| emit_modifier_state(&emit_app, state));
@@ -345,19 +387,28 @@ mod platform_impl {
                 hotkey,
                 pressed: HashSet::new(),
                 active: false,
+                release_miss_count: 0,
                 emit_state,
                 should_stop: AtomicBool::new(false),
             });
         }
 
-        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), None, 0) }
-            .map_err(|error| format!("无法安装键盘监听：{error}"))?;
+        let hook = match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), None, 0) }
+        {
+            Ok(hook) => hook,
+            Err(error) => {
+                clear_hook_context();
+                return Err(format!("无法安装键盘监听：{error}"));
+            }
+        };
         let _hook_guard = HookGuard(hook);
         eprintln!("[saynow] native hotkey hook installed");
 
         let mut message = MSG::default();
+        let mut last_health_check = Instant::now();
         loop {
             if stop_rx.try_recv().is_ok() {
+                release_active_hotkey("monitor stop requested");
                 mark_hook_stop();
                 break;
             }
@@ -368,9 +419,14 @@ mod platform_impl {
                     DispatchMessageW(&message);
                 }
             }
-            thread::sleep(Duration::from_millis(20));
+            if last_health_check.elapsed() >= HOTKEY_HEALTH_CHECK_INTERVAL {
+                check_hotkey_health();
+                last_health_check = Instant::now();
+            }
+            thread::sleep(HOOK_POLL_INTERVAL);
         }
 
+        release_active_hotkey("hook cleanup");
         clear_hook_context();
         eprintln!("[saynow] native hotkey hook stopped");
         Ok(())
@@ -410,6 +466,7 @@ mod platform_impl {
         });
 
         if pressed {
+            context.release_miss_count = 0;
             if let Some(key) = modifier {
                 context.pressed.insert(key);
             }
@@ -432,6 +489,7 @@ mod platform_impl {
             context.active && hotkey_contains_key(&context.hotkey, vk_code, modifier);
         if releases_active_hotkey {
             context.active = false;
+            context.release_miss_count = 0;
             eprintln!("[saynow] native hotkey released");
             (context.emit_state)("Released");
         }
@@ -457,6 +515,73 @@ mod platform_impl {
         } else {
             hotkey.trigger == Some(vk_code)
         }
+    }
+
+    fn check_hotkey_health() {
+        let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
+        let Ok(mut context) = context_lock.lock() else {
+            return;
+        };
+        let Some(context) = context.as_mut() else {
+            return;
+        };
+        if context.should_stop.load(Ordering::Relaxed) {
+            return;
+        }
+
+        if !context.active {
+            context.release_miss_count = 0;
+            context.pressed.retain(|key| modifier_is_down(*key));
+            return;
+        }
+
+        if physical_hotkey_is_down(&context.hotkey) {
+            context.release_miss_count = 0;
+            return;
+        }
+
+        context.release_miss_count = context.release_miss_count.saturating_add(1);
+        if context.release_miss_count >= HOTKEY_AUTO_RELEASE_MISSES {
+            context.active = false;
+            context.release_miss_count = 0;
+            context.pressed.clear();
+            eprintln!("[saynow] native hotkey auto-released by health check");
+            (context.emit_state)("Released");
+        }
+    }
+
+    fn physical_hotkey_is_down(hotkey: &HotkeySpec) -> bool {
+        hotkey.modifiers.iter().all(|key| modifier_is_down(*key))
+            && hotkey
+                .trigger
+                .map_or(true, |trigger| virtual_key_is_down(trigger))
+    }
+
+    fn modifier_is_down(key: ModifierKey) -> bool {
+        match key {
+            ModifierKey::Ctrl => {
+                virtual_key_is_down(VK_CONTROL.0 as u32)
+                    || virtual_key_is_down(VK_LCONTROL.0 as u32)
+                    || virtual_key_is_down(VK_RCONTROL.0 as u32)
+            }
+            ModifierKey::Alt => {
+                virtual_key_is_down(VK_MENU.0 as u32)
+                    || virtual_key_is_down(VK_LMENU.0 as u32)
+                    || virtual_key_is_down(VK_RMENU.0 as u32)
+            }
+            ModifierKey::Shift => {
+                virtual_key_is_down(VK_SHIFT.0 as u32)
+                    || virtual_key_is_down(VK_LSHIFT.0 as u32)
+                    || virtual_key_is_down(VK_RSHIFT.0 as u32)
+            }
+            ModifierKey::Meta => {
+                virtual_key_is_down(VK_LWIN.0 as u32) || virtual_key_is_down(VK_RWIN.0 as u32)
+            }
+        }
+    }
+
+    fn virtual_key_is_down(vk_code: u32) -> bool {
+        unsafe { GetAsyncKeyState(vk_code as i32) & KEY_DOWN_MASK != 0 }
     }
 
     fn modifier_from_vk(vk_code: u32) -> Option<ModifierKey> {
@@ -494,6 +619,21 @@ mod platform_impl {
         }
     }
 
+    fn release_active_hotkey(reason: &str) {
+        let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
+        if let Ok(mut context) = context_lock.lock() {
+            if let Some(context) = context.as_mut() {
+                if context.active {
+                    context.active = false;
+                    context.release_miss_count = 0;
+                    context.pressed.clear();
+                    eprintln!("[saynow] native hotkey released; reason={reason}");
+                    (context.emit_state)("Released");
+                }
+            }
+        }
+    }
+
     fn clear_hook_context() {
         let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
         if let Ok(mut context) = context_lock.lock() {
@@ -511,7 +651,39 @@ mod platform_impl {
         }
     }
 
-    fn set_clipboard_text(text: &str) -> Result<(), String> {
+    fn get_clipboard_text() -> Result<Option<String>, String> {
+        unsafe {
+            OpenClipboard(None).map_err(|error| format!("无法打开剪贴板：{error}"))?;
+            let _clipboard_guard = ClipboardGuard;
+
+            if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
+                return Ok(None);
+            }
+
+            let handle = GetClipboardData(CF_UNICODETEXT)
+                .map_err(|error| format!("无法读取剪贴板文本：{error}"))?;
+            if handle.0.is_null() {
+                return Ok(None);
+            }
+
+            let global = HGLOBAL(handle.0);
+            let locked = GlobalLock(global);
+            if locked.is_null() {
+                return Err("无法锁定剪贴板文本内存。".to_string());
+            }
+
+            let ptr = locked.cast::<u16>();
+            let mut len = 0usize;
+            while *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+            let _ = GlobalUnlock(global);
+            Ok(Some(text))
+        }
+    }
+
+    fn set_clipboard_text(text: &str, exclude_from_history: bool) -> Result<(), String> {
         let mut wide: Vec<u16> = text.encode_utf16().collect();
         wide.push(0);
         let byte_len = wide.len() * size_of::<u16>();
@@ -532,11 +704,58 @@ mod platform_impl {
             let _ = GlobalUnlock(handle);
             SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0)))
                 .map_err(|error| format!("无法写入剪贴板：{error}"))?;
+            if exclude_from_history {
+                set_clipboard_history_exclusion()?;
+            }
 
             std::mem::forget(clipboard_guard);
             CloseClipboard().map_err(|error| format!("无法关闭剪贴板：{error}"))?;
         }
 
+        Ok(())
+    }
+
+    fn clear_clipboard(exclude_from_history: bool) -> Result<(), String> {
+        unsafe {
+            OpenClipboard(None).map_err(|error| format!("无法打开剪贴板：{error}"))?;
+            let clipboard_guard = ClipboardGuard;
+            EmptyClipboard().map_err(|error| format!("无法清空剪贴板：{error}"))?;
+            if exclude_from_history {
+                set_clipboard_history_exclusion()?;
+            }
+            std::mem::forget(clipboard_guard);
+            CloseClipboard().map_err(|error| format!("无法关闭剪贴板：{error}"))?;
+        }
+
+        Ok(())
+    }
+
+    fn set_clipboard_history_exclusion() -> Result<(), String> {
+        let format =
+            unsafe { RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing")) };
+        if format == 0 {
+            return Err("无法注册剪贴板历史排除格式。".to_string());
+        }
+
+        let value: u32 = 1;
+        let byte_len = size_of::<u32>();
+        unsafe {
+            let handle = GlobalAlloc(GMEM_MOVEABLE, byte_len)
+                .map_err(|error| format!("无法分配剪贴板历史排除标记内存：{error}"))?;
+            let locked = GlobalLock(handle);
+            if locked.is_null() {
+                return Err("无法锁定剪贴板历史排除标记内存。".to_string());
+            }
+
+            copy_nonoverlapping(
+                (&value as *const u32).cast::<u8>(),
+                locked.cast::<u8>(),
+                byte_len,
+            );
+            let _ = GlobalUnlock(handle);
+            SetClipboardData(format, Some(HANDLE(handle.0)))
+                .map_err(|error| format!("无法写入剪贴板历史排除标记：{error}"))?;
+        }
         Ok(())
     }
 

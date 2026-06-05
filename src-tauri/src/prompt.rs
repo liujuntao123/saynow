@@ -1,5 +1,8 @@
 use crate::models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem};
 
+const FORMAT_EXAMPLE: &str =
+    "格式示例：将“五月二十号，也就是五天前，我五点半就起床了，在北京游览了三个景点。晚上，我还和国外的朋友聊了会儿天，非常happy”输出为“5月20号，也就是5天前，我5:30就起床了，在北京游览了3个景点。晚上，我还和国外的朋友聊了会儿天，非常happy”。";
+
 pub fn build_prompt_context(
     vocabulary: &[VocabularyItem],
     styles: &[StylePrompt],
@@ -38,6 +41,7 @@ pub fn build_prompt_context(
     let mut sections = vec![
         "你是一个桌面端语音识别助手。只输出最终识别文本，不输出解释。".to_string(),
         format!("输出风格：{}", style),
+        FORMAT_EXAMPLE.to_string(),
     ];
 
     if !words.is_empty() {
@@ -96,6 +100,10 @@ mod tests {
         assert!(prompt.contains("Kunlun"));
         assert!(prompt.contains("昆仑"));
         assert!(prompt.contains("整理为简洁书面语"));
+        assert!(prompt.contains("5月20号"));
+        assert!(prompt.contains("5:30"));
+        assert!(prompt.contains("3个景点"));
+        assert!(prompt.contains("happy"));
         assert!(prompt.contains("昨天讨论 Kunlun"));
         assert!(!prompt.contains("disabled"));
     }

@@ -177,13 +177,14 @@ onBeforeUnmount(() => {
   height: 32px;
   margin-left: -19px;
 
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.3));
-  backdrop-filter: blur(12px) saturate(150%);
-  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(250, 253, 252, 0.88));
+  backdrop-filter: blur(16px) saturate(170%);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
   border-radius: 16px;
   box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.06),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+    0 8px 24px rgba(15, 23, 42, 0.14),
+    inset 0 0 0 1px rgba(15, 143, 131, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.95);
 
   transform: scaleX(0);
   transform-origin: left center;
@@ -215,10 +216,10 @@ onBeforeUnmount(() => {
 
 .strip-text {
   font-size: 14px;
-  font-weight: 500;
-  color: #1e293b;
-  letter-spacing: 0.3px;
-  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+  font-weight: 650;
+  color: #0f172a;
+  letter-spacing: 0;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.95);
 }
 
 .strip-cursor {

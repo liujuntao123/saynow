@@ -21,6 +21,9 @@ export interface PromptContextInput {
   records: HistoryRecord[];
 }
 
+const FORMAT_EXAMPLE =
+  '格式示例：将“五月二十号，也就是五天前，我五点半就起床了，在北京游览了三个景点。晚上，我还和国外的朋友聊了会儿天，非常happy”输出为“5月20号，也就是5天前，我5:30就起床了，在北京游览了3个景点。晚上，我还和国外的朋友聊了会儿天，非常happy”。';
+
 export function buildPromptPreview(input: PromptContextInput): string {
   const vocabulary = input.vocabulary
     .filter((item) => item.enabled)
@@ -39,6 +42,7 @@ export function buildPromptPreview(input: PromptContextInput): string {
   return [
     '你是一个桌面端语音识别助手。只输出最终识别文本，不输出解释。',
     `输出风格：${style}`,
+    FORMAT_EXAMPLE,
     vocabulary ? `用户词库：\n${vocabulary}` : '',
     history ? `相关历史：\n${history}` : '',
   ]

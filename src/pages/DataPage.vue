@@ -1,64 +1,17 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import UiPanel from '../components/UiPanel.vue';
-import type { RecognitionRecord, StylePrompt, VocabularyItem } from '../types';
+import type { RecognitionRecord } from '../types';
 
 defineProps<{
   records: RecognitionRecord[];
-  vocabulary: VocabularyItem[];
-  styles: StylePrompt[];
 }>();
 
-const emit = defineEmits<{
-  addVocabularyTerms: [terms: string[]];
-  deleteVocabulary: [id: number];
-  addStyle: [item: StylePrompt];
-  updateStyle: [item: StylePrompt];
-  deleteStyle: [id: number];
-}>();
-
-const activeTab = ref<'records' | 'vocabulary' | 'styles'>('records');
-const vocabularyText = ref('');
-const style = reactive<StylePrompt>({ id: 0, name: '', prompt: '', enabled: true });
-const editingStyles = reactive<Record<number, StylePrompt>>({});
-
-function submitVocabulary() {
-  const terms = vocabularyText.value
-    .split('\n')
-    .map((term) => term.trim())
-    .filter(Boolean);
-  if (!terms.length) return;
-  emit('addVocabularyTerms', terms);
-  vocabularyText.value = '';
-}
-
-function submitStyle() {
-  if (!style.name.trim() || !style.prompt.trim()) return;
-  emit('addStyle', { ...style });
-  Object.assign(style, { id: 0, name: '', prompt: '', enabled: true });
-}
-
-function startEditStyle(item: StylePrompt) {
-  editingStyles[item.id] = { ...item };
-}
-
-function cancelEditStyle(id: number) {
-  delete editingStyles[id];
-}
-
-function saveStyle(id: number) {
-  const draft = editingStyles[id];
-  if (!draft?.name.trim() || !draft.prompt.trim()) return;
-  emit('updateStyle', { ...draft, name: draft.name.trim(), prompt: draft.prompt.trim() });
-  delete editingStyles[id];
-}
-
-function toggleStyle(item: StylePrompt) {
-  emit('updateStyle', { ...item, enabled: !item.enabled });
+function formatDate(value: string) {
+  return new Date(value).toLocaleString();
 }
 </script>
 
@@ -66,133 +19,85 @@ function toggleStyle(item: StylePrompt) {
   <div class="page-stack">
     <PageHeader title="数据" icon="database" />
 
-    <div class="tabs">
-      <button :class="{ active: activeTab === 'records' }" type="button" @click="activeTab = 'records'">
-        <AppIcon name="fileText" />
-        识别记录
-      </button>
-      <button :class="{ active: activeTab === 'vocabulary' }" type="button" @click="activeTab = 'vocabulary'">
-        <AppIcon name="book" />
-        自定义词库
-      </button>
-      <button :class="{ active: activeTab === 'styles' }" type="button" @click="activeTab = 'styles'">
-        <AppIcon name="spark" />
-        风格提示词
-      </button>
-    </div>
+    <UiPanel title="历史识别" :meta="`共 ${records.length} 条记录`" icon="database" class="flat-panel">
+      <div v-if="records.length" class="record-card-list art-timeline">
+        <article v-for="(record, index) in records" :key="record.id" class="record-card data-record-card" :style="{ animationDelay: `${index * 50}ms` }">
+          <div class="timeline-line"></div>
+          <div class="timeline-dot"></div>
 
-    <UiPanel v-if="activeTab === 'records'" :meta="`共 ${records.length} 条记录`" flush>
-      <div v-if="records.length" class="records-table data-records-table">
-        <div class="table-row table-head data-table-row">
-          <span>时间</span>
-          <span>文本</span>
-          <span>供应商</span>
-          <span>状态</span>
-        </div>
-        <div v-for="record in records" :key="record.id" class="table-row data-table-row">
-          <span>{{ new Date(record.createdAt).toLocaleString() }}</span>
-          <strong>{{ record.text }}</strong>
-          <span>{{ record.provider }}</span>
-          <StatusBadge :status="record.status" />
-        </div>
-      </div>
-      <EmptyState v-else icon="fileText" title="暂无识别记录" description="完成语音识别后显示。" />
-    </UiPanel>
-
-    <section v-if="activeTab === 'vocabulary'" class="split-section">
-      <form class="editor-panel" @submit.prevent="submitVocabulary">
-        <div class="panel-title-block">
-          <span class="panel-title-icon"><AppIcon name="book" /></span>
-          <h2>自定义词条</h2>
-        </div>
-        <label>
-          词条内容
-          <textarea v-model="vocabularyText" rows="9" placeholder="每行一个词条"></textarea>
-        </label>
-        <button class="primary-button icon-button full-width" type="submit">
-          <AppIcon name="plus" />
-          添加词条
-        </button>
-      </form>
-      <UiPanel class="list-panel" title="词库条目" :meta="`共 ${vocabulary.length} 条`" icon="database">
-        <div v-if="vocabulary.length" class="data-list">
-          <div v-for="item in vocabulary" :key="item.id" class="data-item">
-            <div>
-              <strong>{{ item.term }}</strong>
-              <span class="state-pill" :class="{ disabled: !item.enabled }">{{ item.enabled ? '已启用' : '已停用' }}</span>
+          <div class="data-content glass-card">
+            <div class="card-top">
+              <div class="info-cluster">
+                <span class="info-time">{{ formatDate(record.createdAt) }}</span>
+                <span class="info-divider"></span>
+                <span class="info-item"><AppIcon name="layers" class="micro-icon"/> {{ record.provider }}</span>
+                <span class="info-item">{{ record.model }}</span>
+                <span class="info-item">{{ record.durationSeconds }}s</span>
+              </div>
+              <StatusBadge :status="record.status" />
             </div>
-            <button class="danger-button icon-only-button" type="button" aria-label="删除词条" title="删除" @click="emit('deleteVocabulary', item.id)">
-              <AppIcon name="trash" />
-            </button>
-          </div>
-        </div>
-        <EmptyState v-else icon="book" title="暂无词条" description="添加后用于识别保留。" />
-      </UiPanel>
-    </section>
 
-    <section v-if="activeTab === 'styles'" class="split-section">
-      <form class="editor-panel" @submit.prevent="submitStyle">
-        <div class="panel-title-block">
-          <span class="panel-title-icon"><AppIcon name="spark" /></span>
-          <h2>新建提示词</h2>
-        </div>
-        <label>
-          名称
-          <input v-model="style.name" />
-        </label>
-        <label>
-          提示词
-          <textarea v-model="style.prompt" rows="8"></textarea>
-        </label>
-        <label class="check-line"><input v-model="style.enabled" type="checkbox" />默认启用</label>
-        <button class="primary-button icon-button full-width" type="submit">
-          <AppIcon name="plus" />
-          添加提示词
-        </button>
-      </form>
-      <UiPanel class="list-panel" title="提示词预设" :meta="`共 ${styles.length} 条`" icon="spark">
-        <div v-if="styles.length" class="data-list">
-          <div v-for="item in styles" :key="item.id" class="data-item style-item">
-            <template v-if="editingStyles[item.id]">
-              <label>名称<input v-model="editingStyles[item.id].name" /></label>
-              <label>提示词<textarea v-model="editingStyles[item.id].prompt" rows="5"></textarea></label>
-              <label class="check-line"><input v-model="editingStyles[item.id].enabled" type="checkbox" />启用</label>
-              <div class="item-actions">
-                <button class="primary-button icon-button" type="button" @click="saveStyle(item.id)">
-                  <AppIcon name="save" />
-                  保存
-                </button>
-                <button class="ghost-button icon-only-button" type="button" aria-label="取消编辑" title="取消" @click="cancelEditStyle(item.id)">
-                  <AppIcon name="x" />
-                </button>
-              </div>
-            </template>
-            <template v-else>
-              <div class="item-heading">
-                <div>
-                  <strong>{{ item.name }}</strong>
-                  <p>{{ item.prompt }}</p>
-                </div>
-                <span class="state-pill" :class="{ disabled: !item.enabled }">{{ item.enabled ? '已启用' : '已停用' }}</span>
-              </div>
-              <div class="item-actions">
-                <button class="secondary-button icon-button" type="button" @click="startEditStyle(item)">
-                  <AppIcon name="settings" />
-                  修改
-                </button>
-                <button class="ghost-button icon-button" type="button" @click="toggleStyle(item)">
-                  <AppIcon :name="item.enabled ? 'x' : 'check'" />
-                  {{ item.enabled ? '停用' : '启用' }}
-                </button>
-                <button class="danger-button icon-only-button" type="button" aria-label="删除提示词" title="删除" @click="emit('deleteStyle', item.id)">
-                  <AppIcon name="trash" />
-                </button>
-              </div>
-            </template>
+            <p class="transcript-body">{{ record.text }}</p>
+
+            <p v-if="record.errorMessage" class="record-error error-strip">
+              <AppIcon name="alert-circle" class="micro-icon" />
+              <span>{{ record.errorMessage }}</span>
+            </p>
           </div>
-        </div>
-        <EmptyState v-else icon="spark" title="暂无提示词" description="添加后用于文本整理。" />
-      </UiPanel>
-    </section>
+        </article>
+      </div>
+      <EmptyState v-else icon="fileText" title="暂无识别记录" description="完成语音识别后将在此处凝结成文字。" />
+    </UiPanel>
   </div>
 </template>
+
+<style scoped>
+.page-stack { display: flex; flex-direction: column; gap: 36px; padding-bottom: 40px; }
+
+/* 扁平无界容器 */
+:deep(.flat-panel) { background: transparent; box-shadow: none; border: none; padding: 0; }
+:deep(.flat-panel .ui-panel-header) { font-size: 20px; padding-bottom: 16px; border-bottom: 2px solid rgba(0,0,0,0.03); margin-bottom: 32px; display: flex; justify-content: space-between; align-items: center; }
+
+/* 优雅时间轴复用原本类名进行覆盖 */
+.art-timeline { position: relative; padding-left: 20px; display: flex; flex-direction: column; gap: 24px; }
+.data-record-card { position: relative; padding-left: 36px; animation: fadeSlideUp 0.6s ease backwards; border: none; background: transparent; box-shadow: none; display: block; }
+.data-record-card:hover { background: transparent; transform: none; box-shadow: none; }
+
+/* 时间轴线条和圆点 */
+.timeline-line {
+  position: absolute; left: 0; top: 32px; bottom: -56px; width: 2px;
+  background: linear-gradient(to bottom, rgba(15,143,131,0.2) 0%, rgba(15,143,131,0.05) 100%);
+  border-radius: 2px;
+}
+.data-record-card:last-child .timeline-line { display: none; }
+.timeline-dot {
+  position: absolute; left: -4px; top: 20px; width: 10px; height: 10px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--accent, #0f8f83);
+  box-shadow: 0 0 0 4px rgba(15,143,131,0.1);
+}
+
+/* 玻璃态内容卡片 */
+.glass-card {
+  background: #ffffff; border-radius: 16px; padding: 24px;
+  border: 1px solid rgba(0,0,0,0.03); box-shadow: 0 4px 24px -8px rgba(0,0,0,0.04);
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.glass-card:hover { transform: translateX(4px); box-shadow: 0 12px 32px -8px rgba(0,0,0,0.08); border-color: rgba(15,143,131,0.1); }
+
+.card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+.info-cluster { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.info-time { font-size: 14px; font-weight: 600; color: #1d1d1f; }
+.info-divider { width: 4px; height: 4px; border-radius: 50%; background: #d1d1d6; }
+.info-item { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: #86868b; }
+.micro-icon { width: 14px; height: 14px; }
+
+.transcript-body { font-size: 16px; line-height: 1.8; color: #333; font-weight: 400; letter-spacing: 0.3px; margin: 0; }
+
+.error-strip {
+  margin-top: 16px; display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 16px; background: rgba(255, 59, 48, 0.05); color: #ff3b30 !important;
+  border-radius: 10px; font-size: 13px; font-weight: 500;
+}
+
+@keyframes fadeSlideUp { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+</style>

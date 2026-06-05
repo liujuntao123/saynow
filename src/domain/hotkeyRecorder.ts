@@ -39,30 +39,20 @@ export function isModifierOnlyHotkey(hotkey: string): boolean {
   return parts.length > 0 && parts.every((part) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
 }
 
-export function toModifierHotkeyParts(hotkey: string): string[] {
-  return hotkeyParts(hotkey).filter((part) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
-}
-
-export function toGlobalShortcut(hotkey: string): string {
-  return hotkeyParts(hotkey)
-    .map((part) => {
-      if (part === 'Ctrl') return 'CommandOrControl';
-      if (part === 'Meta') return 'Command';
-      return part;
-    })
-    .join('+');
-}
-
 export interface HoldHotkeyHandlers {
   onStart: () => void;
   onStop: () => void;
 }
 
-function hotkeyParts(hotkey: string): string[] {
+export function toHotkeyParts(hotkey: string): string[] {
   return hotkey
     .split('+')
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function hotkeyParts(hotkey: string): string[] {
+  return toHotkeyParts(hotkey);
 }
 
 function eventMatchesHotkey(event: KeyboardEvent, hotkey: string): boolean {

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AppConfig, DashboardData, RecognitionRecord, StylePrompt, VocabularyItem } from '../types';
+import type { AppConfig, DashboardData, ProviderConfig, RecognitionRecord, StylePrompt, VocabularyItem } from '../types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -10,7 +10,7 @@ const demoRecords: RecognitionRecord[] = [
     durationSeconds: 18,
     text: '请把 Qwen3.5-Omni 的供应商配置放到默认模板里。',
     provider: 'Qwen',
-    model: 'qwen3.5-omni',
+    model: 'qwen3.5-omni-plus',
     status: 'success',
   },
   {
@@ -26,11 +26,31 @@ const demoRecords: RecognitionRecord[] = [
 
 let demoConfig: AppConfig = {
   provider: 'MiMo',
-  baseUrl: 'https://api.mimo-v2.com/v1',
+  baseUrl: 'https://api.xiaomimimo.com/v1',
   model: 'mimo-v2.5',
   apiKeyRef: 'credential-manager:mimo',
   hotkey: 'Ctrl+Space',
 };
+
+let demoProviders: ProviderConfig[] = [
+  {
+    id: 1,
+    provider: 'MiMo',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    model: 'mimo-v2.5',
+    apiKeyRef: 'credential-manager:mimo',
+    enabled: true,
+  },
+  {
+    id: 2,
+    provider: 'Qwen',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen3.5-omni-plus',
+    apiKeyRef: 'credential-manager:qwen',
+    enabled: false,
+  },
+];
+let nextDemoProviderId = 3;
 
 let demoVocabulary: VocabularyItem[] = [
   { id: 1, term: 'Kunlun', alias: '昆仑', category: '项目', note: '内部项目名', enabled: true },
@@ -72,6 +92,47 @@ export async function saveConfig(config: AppConfig): Promise<AppConfig> {
   if (isTauri) return invoke('save_config', { config });
   demoConfig = config;
   return demoConfig;
+}
+
+export async function listProviderConfigs(): Promise<ProviderConfig[]> {
+  if (isTauri) return invoke('list_provider_configs');
+  return demoProviders;
+}
+
+export async function saveProviderConfig(provider: ProviderConfig): Promise<ProviderConfig[]> {
+  if (isTauri) return invoke('save_provider_config', { provider });
+  const saved = { ...provider, id: provider.id || nextDemoProviderId++ };
+  const hasEnabled = saved.enabled || !demoProviders.length;
+  demoProviders = demoProviders.filter((item) => item.id !== saved.id);
+  demoProviders = [{ ...saved, enabled: hasEnabled }, ...demoProviders].map((item) => ({
+    ...item,
+    enabled: hasEnabled ? item.id === saved.id : item.enabled,
+  }));
+  if (hasEnabled) {
+    demoConfig = { provider: saved.provider, baseUrl: saved.baseUrl, model: saved.model, apiKeyRef: saved.apiKeyRef, hotkey: demoConfig.hotkey };
+  }
+  return demoProviders;
+}
+
+export async function selectProviderConfig(id: number): Promise<AppConfig> {
+  if (isTauri) return invoke('select_provider_config', { id });
+  const provider = demoProviders.find((item) => item.id === id);
+  if (!provider) return demoConfig;
+  demoProviders = demoProviders.map((item) => ({ ...item, enabled: item.id === id }));
+  demoConfig = { provider: provider.provider, baseUrl: provider.baseUrl, model: provider.model, apiKeyRef: provider.apiKeyRef, hotkey: demoConfig.hotkey };
+  return demoConfig;
+}
+
+export async function deleteProviderConfig(id: number): Promise<ProviderConfig[]> {
+  if (isTauri) return invoke('delete_provider_config', { id });
+  const wasEnabled = demoProviders.some((item) => item.id === id && item.enabled);
+  demoProviders = demoProviders.filter((item) => item.id !== id);
+  if (wasEnabled && demoProviders.length) {
+    demoProviders = demoProviders.map((item, index) => ({ ...item, enabled: index === 0 }));
+    const provider = demoProviders[0];
+    demoConfig = { provider: provider.provider, baseUrl: provider.baseUrl, model: provider.model, apiKeyRef: provider.apiKeyRef, hotkey: demoConfig.hotkey };
+  }
+  return demoProviders;
 }
 
 export async function listRecords(): Promise<RecognitionRecord[]> {
@@ -173,6 +234,18 @@ export async function recognizeAudio(input: {
   return record;
 }
 
-export async function setModifierHotkeyMonitor(parts: string[] | null): Promise<void> {
-  if (isTauri) return invoke('set_modifier_hotkey_monitor', { parts });
+export async function showRecorderOverlayNoActivate(): Promise<void> {
+  if (isTauri) return invoke('show_recorder_overlay_no_activate');
+}
+
+export async function hideRecorderOverlayWindow(): Promise<void> {
+  if (isTauri) return invoke('hide_recorder_overlay');
+}
+
+export async function setRecorderOverlayPosition(x: number, y: number): Promise<void> {
+  if (isTauri) return invoke('set_recorder_overlay_position', { x, y });
+}
+
+export async function setHotkeyMonitor(parts: string[] | null): Promise<void> {
+  if (isTauri) return invoke('set_hotkey_monitor', { parts });
 }

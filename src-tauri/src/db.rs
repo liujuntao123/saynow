@@ -20,11 +20,22 @@ pub struct AppConfig {
     pub hotkey: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfig {
+    pub id: i64,
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key_ref: String,
+    pub enabled: bool,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             provider: "MiMo".to_string(),
-            base_url: "https://api.mimo-v2.com/v1".to_string(),
+            base_url: "https://api.xiaomimimo.com/v1".to_string(),
             model: "mimo-v2.5".to_string(),
             api_key_ref: "credential-manager:mimo".to_string(),
             hotkey: "Ctrl+Space".to_string(),
@@ -62,6 +73,15 @@ impl AppDb {
                 hotkey TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS provider_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                model TEXT NOT NULL,
+                api_key_ref TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS recognition_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL,
@@ -90,52 +110,142 @@ impl AppDb {
             );
             "#,
         )?;
+        let provider_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM provider_configs", [], |row| {
+                row.get(0)
+            })?;
+        if provider_count == 0 {
+            let config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
+            conn.execute(
+                r#"
+                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled)
+                VALUES (?1, ?2, ?3, ?4, 1)
+                "#,
+                params![
+                    config.provider,
+                    config.base_url,
+                    config.model,
+                    config.api_key_ref
+                ],
+            )?;
+        }
         Ok(())
     }
 
     pub fn get_config(&self) -> Result<AppConfig> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        let result = conn.query_row(
-            "SELECT provider, base_url, model, api_key_ref, hotkey FROM app_config WHERE id = 1",
-            [],
-            |row| {
-                Ok(AppConfig {
-                    provider: row.get(0)?,
-                    base_url: row.get(1)?,
-                    model: row.get(2)?,
-                    api_key_ref: row.get(3)?,
-                    hotkey: row.get(4)?,
-                })
-            },
-        );
-        match result {
-            Ok(config) => Ok(config),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AppConfig::default()),
-            Err(error) => Err(error),
+        let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
+        if let Some(provider) = Self::get_enabled_provider_from_conn(&conn)? {
+            config.provider = provider.provider;
+            config.base_url = provider.base_url;
+            config.model = provider.model;
+            config.api_key_ref = provider.api_key_ref;
         }
+        Ok(config)
     }
 
     pub fn save_config(&self, config: &AppConfig) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
-        conn.execute(
-            r#"
-            INSERT INTO app_config (id, provider, base_url, model, api_key_ref, hotkey)
-            VALUES (1, ?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(id) DO UPDATE SET
-                provider = excluded.provider,
-                base_url = excluded.base_url,
-                model = excluded.model,
-                api_key_ref = excluded.api_key_ref,
-                hotkey = excluded.hotkey
-            "#,
-            params![
-                config.provider,
-                config.base_url,
-                config.model,
-                config.api_key_ref,
-                config.hotkey
-            ],
-        )?;
+        Self::save_config_from_conn(&conn, config)?;
+        Self::upsert_provider_from_config(&conn, config)?;
+        Ok(())
+    }
+
+    pub fn list_provider_configs(&self) -> Result<Vec<ProviderConfig>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        Self::list_provider_configs_from_conn(&conn)
+    }
+
+    pub fn save_provider_config(&self, provider: &ProviderConfig) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let enabled = provider.enabled || Self::provider_count_from_conn(&conn)? == 0;
+        let id = if provider.id > 0 {
+            conn.execute(
+                r#"
+                UPDATE provider_configs
+                SET provider = ?1, base_url = ?2, model = ?3, api_key_ref = ?4, enabled = ?5
+                WHERE id = ?6
+                "#,
+                params![
+                    provider.provider,
+                    provider.base_url,
+                    provider.model,
+                    provider.api_key_ref,
+                    if enabled { 1 } else { 0 },
+                    provider.id
+                ],
+            )?;
+            provider.id
+        } else {
+            conn.execute(
+                r#"
+                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    provider.provider,
+                    provider.base_url,
+                    provider.model,
+                    provider.api_key_ref,
+                    if enabled { 1 } else { 0 }
+                ],
+            )?;
+            conn.last_insert_rowid()
+        };
+        if enabled {
+            Self::select_provider_config_from_conn(&conn, id)?;
+        } else {
+            Self::ensure_enabled_provider_config(&conn)?;
+        }
+        Ok(())
+    }
+
+    pub fn select_provider_config(&self, id: i64) -> Result<AppConfig> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        Self::select_provider_config_from_conn(&conn, id)?;
+        let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
+        if let Some(provider) = Self::get_enabled_provider_from_conn(&conn)? {
+            config.provider = provider.provider;
+            config.base_url = provider.base_url;
+            config.model = provider.model;
+            config.api_key_ref = provider.api_key_ref;
+        }
+        Self::save_config_from_conn(&conn, &config)?;
+        Ok(config)
+    }
+
+    pub fn delete_provider_config(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let was_enabled = conn
+            .query_row(
+                "SELECT enabled FROM provider_configs WHERE id = ?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|enabled| enabled == 1)
+            .unwrap_or(false);
+        conn.execute("DELETE FROM provider_configs WHERE id = ?1", [id])?;
+        if was_enabled {
+            conn.execute(
+                r#"
+                UPDATE provider_configs
+                SET enabled = CASE
+                    WHEN id = (SELECT id FROM provider_configs ORDER BY id DESC LIMIT 1) THEN 1
+                    ELSE 0
+                END
+                "#,
+                [],
+            )?;
+        }
+        Self::normalize_enabled_provider_configs(&conn)?;
+        if let Some(provider) = Self::get_enabled_provider_from_conn(&conn)? {
+            let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
+            config.provider = provider.provider;
+            config.base_url = provider.base_url;
+            config.model = provider.model;
+            config.api_key_ref = provider.api_key_ref;
+            Self::save_config_from_conn(&conn, &config)?;
+        }
         Ok(())
     }
 
@@ -331,6 +441,194 @@ impl AppDb {
         )?;
         Ok(())
     }
+
+    fn get_config_from_conn(conn: &Connection) -> Result<Option<AppConfig>> {
+        let result = conn.query_row(
+            "SELECT provider, base_url, model, api_key_ref, hotkey FROM app_config WHERE id = 1",
+            [],
+            |row| {
+                Ok(AppConfig {
+                    provider: row.get(0)?,
+                    base_url: row.get(1)?,
+                    model: row.get(2)?,
+                    api_key_ref: row.get(3)?,
+                    hotkey: row.get(4)?,
+                })
+            },
+        );
+        match result {
+            Ok(config) => Ok(Some(config)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn save_config_from_conn(conn: &Connection, config: &AppConfig) -> Result<()> {
+        conn.execute(
+            r#"
+            INSERT INTO app_config (id, provider, base_url, model, api_key_ref, hotkey)
+            VALUES (1, ?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(id) DO UPDATE SET
+                provider = excluded.provider,
+                base_url = excluded.base_url,
+                model = excluded.model,
+                api_key_ref = excluded.api_key_ref,
+                hotkey = excluded.hotkey
+            "#,
+            params![
+                config.provider,
+                config.base_url,
+                config.model,
+                config.api_key_ref,
+                config.hotkey
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn list_provider_configs_from_conn(conn: &Connection) -> Result<Vec<ProviderConfig>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, provider, base_url, model, api_key_ref, enabled FROM provider_configs ORDER BY enabled DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProviderConfig {
+                id: row.get(0)?,
+                provider: row.get(1)?,
+                base_url: row.get(2)?,
+                model: row.get(3)?,
+                api_key_ref: row.get(4)?,
+                enabled: row.get::<_, i64>(5)? == 1,
+            })
+        })?;
+        rows.collect()
+    }
+
+    fn get_enabled_provider_from_conn(conn: &Connection) -> Result<Option<ProviderConfig>> {
+        let result = conn.query_row(
+            "SELECT id, provider, base_url, model, api_key_ref, enabled FROM provider_configs WHERE enabled = 1 ORDER BY id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(ProviderConfig {
+                    id: row.get(0)?,
+                    provider: row.get(1)?,
+                    base_url: row.get(2)?,
+                    model: row.get(3)?,
+                    api_key_ref: row.get(4)?,
+                    enabled: row.get::<_, i64>(5)? == 1,
+                })
+            },
+        );
+        match result {
+            Ok(provider) => Ok(Some(provider)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn provider_count_from_conn(conn: &Connection) -> Result<i64> {
+        conn.query_row("SELECT COUNT(*) FROM provider_configs", [], |row| {
+            row.get(0)
+        })
+    }
+
+    fn upsert_provider_from_config(conn: &Connection, config: &AppConfig) -> Result<()> {
+        let existing_id = conn
+            .query_row(
+                "SELECT id FROM provider_configs WHERE provider = ?1 AND model = ?2 LIMIT 1",
+                params![config.provider, config.model],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok();
+        if let Some(id) = existing_id {
+            conn.execute(
+                r#"
+                UPDATE provider_configs
+                SET base_url = ?1, api_key_ref = ?2, enabled = 1
+                WHERE id = ?3
+                "#,
+                params![config.base_url, config.api_key_ref, id],
+            )?;
+            Self::select_provider_config_from_conn(conn, id)?;
+        } else {
+            conn.execute(
+                r#"
+                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled)
+                VALUES (?1, ?2, ?3, ?4, 1)
+                "#,
+                params![
+                    config.provider,
+                    config.base_url,
+                    config.model,
+                    config.api_key_ref
+                ],
+            )?;
+            Self::select_provider_config_from_conn(conn, conn.last_insert_rowid())?;
+        }
+        Ok(())
+    }
+
+    fn select_provider_config_from_conn(conn: &Connection, id: i64) -> Result<()> {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM provider_configs WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        conn.execute(
+            r#"
+            UPDATE provider_configs
+            SET enabled = CASE WHEN id = ?1 THEN 1 ELSE 0 END
+            "#,
+            [id],
+        )?;
+        Ok(())
+    }
+
+    fn normalize_enabled_provider_configs(conn: &Connection) -> Result<()> {
+        conn.execute(
+            r#"
+            UPDATE provider_configs
+            SET enabled = CASE
+                WHEN id = (
+                    SELECT id
+                    FROM provider_configs
+                    WHERE enabled = 1
+                    ORDER BY id DESC
+                    LIMIT 1
+                ) THEN 1
+                ELSE 0
+            END
+            WHERE enabled = 1
+            "#,
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_enabled_provider_config(conn: &Connection) -> Result<()> {
+        let enabled_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM provider_configs WHERE enabled = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        if enabled_count == 0 {
+            conn.execute(
+                r#"
+                UPDATE provider_configs
+                SET enabled = CASE
+                    WHEN id = (SELECT id FROM provider_configs ORDER BY id DESC LIMIT 1) THEN 1
+                    ELSE 0
+                END
+                "#,
+                [],
+            )?;
+        } else {
+            Self::normalize_enabled_provider_configs(conn)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -343,7 +641,7 @@ mod tests {
         let config = AppConfig {
             provider: "Qwen".to_string(),
             base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-            model: "qwen3.5-omni".to_string(),
+            model: "qwen3.5-omni-plus".to_string(),
             api_key_ref: "credential-manager:qwen".to_string(),
             hotkey: "Alt+Space".to_string(),
         };
@@ -368,7 +666,7 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(db.get_config().unwrap().model, "qwen3.5-omni");
+        assert_eq!(db.get_config().unwrap().model, "qwen3.5-omni-plus");
         assert_eq!(db.list_records(10).unwrap()[0].text, "识别文本");
         assert_eq!(db.list_vocabulary().unwrap()[0].term, "Qwen");
         assert_eq!(db.list_style_prompts().unwrap()[0].name, "书面语");

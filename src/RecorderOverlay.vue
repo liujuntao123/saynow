@@ -4,10 +4,9 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import AppIcon from './components/AppIcon.vue';
 
 const state = ref<'recording' | 'processing' | 'error'>('recording');
-const elapsed = ref(0);
-let startedAt = Date.now();
-let timer: number | undefined;
-let unlisten: (() => void) | undefined;
+const transcript = ref('');
+let unlistenState: (() => void) | undefined;
+let unlistenTranscript: (() => void) | undefined;
 
 const label = computed(() => {
   if (state.value === 'processing') return '正在识别';
@@ -15,34 +14,265 @@ const label = computed(() => {
   return '正在录音';
 });
 
-const elapsedText = computed(() => `${elapsed.value}s`);
+const transcriptPreview = computed(() => transcript.value.trim());
+const ariaLabel = computed(() => {
+  if (transcriptPreview.value) return `${label.value}：${transcriptPreview.value}`;
+  return label.value;
+});
 
 onMounted(async () => {
+  document.documentElement.classList.add('recorder-root');
   document.body.classList.add('recorder-body');
-  timer = window.setInterval(() => {
-    elapsed.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-  }, 250);
-  unlisten = await getCurrentWindow().listen<{ state: 'recording' | 'processing' | 'error' }>('recorder-state', (event) => {
+  const currentWindow = getCurrentWindow();
+  unlistenState = await currentWindow.listen<{ state: 'recording' | 'processing' | 'error' }>('recorder-state', (event) => {
     state.value = event.payload.state;
-    if (state.value === 'recording') {
-      startedAt = Date.now();
-      elapsed.value = 0;
-    }
+    transcript.value = '';
+  });
+  unlistenTranscript = await currentWindow.listen<{ text: string; done?: boolean }>('recorder-transcript', (event) => {
+    transcript.value = event.payload.text ?? '';
   });
 });
 
 onBeforeUnmount(() => {
+  document.documentElement.classList.remove('recorder-root');
   document.body.classList.remove('recorder-body');
-  if (timer) window.clearInterval(timer);
-  unlisten?.();
+  unlistenState?.();
+  unlistenTranscript?.();
 });
 </script>
 
 <template>
-  <div class="recorder-overlay" :class="state">
-    <span class="recorder-dot" aria-hidden="true"></span>
-    <AppIcon :name="state === 'processing' ? 'activity' : 'mic'" />
-    <strong>{{ label }}</strong>
-    <span>{{ state === 'recording' ? elapsedText : '请稍候' }}</span>
+  <div
+    class="morph-hud recorder-overlay"
+    :class="[state, { 'has-transcript': transcriptPreview }]"
+    role="status"
+    :aria-label="ariaLabel"
+  >
+    <div class="hud-orb">
+      <div class="orb-halo"></div>
+      <div class="orb-ring"></div>
+      <div class="orb-icon-wrapper">
+        <AppIcon :name="state === 'processing' ? 'activity' : 'mic'" class="orb-icon" />
+      </div>
+    </div>
+
+    <div class="hud-strip">
+      <div class="strip-content">
+        <span class="strip-text">{{ transcriptPreview }}</span>
+        <span class="strip-cursor"></span>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.morph-hud {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  width: max-content !important;
+  height: max-content !important;
+  padding: 12px !important;
+}
+
+.hud-orb {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  flex-shrink: 0;
+}
+
+.orb-halo {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0.15;
+  transition: all 0.5s ease;
+}
+
+.orb-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition: all 0.4s ease;
+}
+
+.orb-icon-wrapper {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.orb-icon {
+  font-size: 16px;
+  transition: color 0.4s ease;
+}
+
+.morph-hud.recording .orb-halo {
+  background: linear-gradient(135deg, #0f8f83, #2dd4bf);
+  animation: orb-breathe 2s ease-in-out infinite alternate;
+}
+.morph-hud.recording .orb-icon {
+  color: #0f8f83;
+}
+.morph-hud.recording .orb-ring {
+  opacity: 1;
+  border: 1.5px solid rgba(15, 143, 131, 0.4);
+  animation: ring-ripple 1.5s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+
+.morph-hud.processing .orb-halo {
+  background: linear-gradient(135deg, #f59e0b, #f97316);
+  opacity: 0.25;
+}
+.morph-hud.processing .orb-icon {
+  color: #d97706;
+}
+.morph-hud.processing .orb-icon-wrapper {
+  transform: scale(0.85);
+}
+.morph-hud.processing .orb-ring {
+  opacity: 1;
+  border: 2px solid transparent;
+  border-top-color: #f59e0b;
+  border-right-color: rgba(245, 158, 11, 0.3);
+  animation: ring-spin 0.8s cubic-bezier(0.5, 0.1, 0.5, 0.9) infinite;
+}
+
+.morph-hud.error .orb-halo {
+  background: #ef4444;
+  opacity: 0.25;
+}
+.morph-hud.error .orb-icon {
+  color: #ef4444;
+  animation: icon-shake 0.4s ease both;
+}
+
+.hud-strip {
+  position: relative;
+  z-index: 1;
+  max-width: 0;
+  opacity: 0;
+  height: 32px;
+  margin-left: -19px;
+
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.3));
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border-radius: 16px;
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition:
+    max-width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.4s ease,
+    transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
+    padding 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.morph-hud.has-transcript .hud-strip {
+  max-width: 320px;
+  opacity: 1;
+  transform: scaleX(1);
+  padding: 0 16px 0 28px;
+}
+
+.strip-content {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
+}
+
+.strip-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e293b;
+  letter-spacing: 0.3px;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+}
+
+.strip-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: #0f8f83;
+  margin-left: 4px;
+  border-radius: 2px;
+  opacity: 0;
+}
+
+.morph-hud.recording.has-transcript .strip-cursor {
+  opacity: 1;
+  animation: cursor-blink 1s step-end infinite;
+}
+
+.morph-hud.processing .strip-text {
+  background: linear-gradient(110deg, #64748b 0%, #cbd5e1 50%, #64748b 100%);
+  background-size: 200% auto;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: text-shimmer 1.5s linear infinite;
+  text-shadow: none;
+}
+
+@keyframes orb-breathe {
+  0% { transform: scale(0.9); opacity: 0.1; }
+  100% { transform: scale(1.1); opacity: 0.25; }
+}
+
+@keyframes ring-ripple {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+@keyframes ring-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes text-shimmer {
+  to { background-position: 200% center; }
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes icon-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+</style>

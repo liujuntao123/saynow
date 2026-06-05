@@ -17,25 +17,8 @@
         "width": 1180,
         "height": 760,
         "minWidth": 960,
-        "minHeight": 640
-      },
-      {
-        "label": "recorder",
-        "url": "index.html?view=recorder",
-        "title": "说文录音",
-        "width": 360,
-        "height": 72,
-        "resizable": false,
-        "maximizable": false,
-        "minimizable": false,
-        "closable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "focus": false,
-        "focusable": false,
-        "transparent": true
+        "minHeight": 640,
+        "visible": false
       }
     ],
     "security": {

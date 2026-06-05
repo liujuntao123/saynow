@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { emitTo, listen } from '@tauri-apps/api/event';
-import { register, unregister } from '@tauri-apps/plugin-global-shortcut';
-import { LogicalPosition } from '@tauri-apps/api/dpi';
-import { Window, primaryMonitor } from '@tauri-apps/api/window';
+import { currentMonitor, cursorPosition, monitorFromPoint, primaryMonitor, type Monitor } from '@tauri-apps/api/window';
 import AppShell from './components/AppShell.vue';
 import {
   addStylePrompt,
@@ -12,26 +10,35 @@ import {
   deleteVocabulary,
   getConfig,
   getDashboard,
+  hideRecorderOverlayWindow,
+  listProviderConfigs,
   listRecords,
   listStylePrompts,
   listVocabulary,
   recognizeAudio,
   saveConfig,
-  setModifierHotkeyMonitor,
-  simulateRecognition,
+  saveProviderConfig,
+  deleteProviderConfig,
+  selectProviderConfig,
+  setHotkeyMonitor,
+  setRecorderOverlayPosition,
+  showRecorderOverlayNoActivate,
   updateStylePrompt,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
-import { createHoldHotkeyController, isModifierOnlyHotkey, toGlobalShortcut, toModifierHotkeyParts } from './domain/hotkeyRecorder';
+import { createHoldHotkeyController, toHotkeyParts } from './domain/hotkeyRecorder';
+import { calculateRecorderOverlayPosition } from './domain/recorderOverlayPosition';
 import ConfigPage from './pages/ConfigPage.vue';
 import DataPage from './pages/DataPage.vue';
 import FeedbackPage from './pages/FeedbackPage.vue';
 import HomePage from './pages/HomePage.vue';
-import type { AppConfig, DashboardData, RecognitionRecord, StylePrompt, VocabularyItem } from './types';
+import PersonalizationPage from './pages/PersonalizationPage.vue';
+import type { AppConfig, DashboardData, ProviderConfig, RecognitionRecord, StylePrompt, VocabularyItem } from './types';
 
 const activePage = ref('home');
 const dashboard = ref<DashboardData | null>(null);
 const config = ref<AppConfig | null>(null);
+const providers = ref<ProviderConfig[]>([]);
 const records = ref<RecognitionRecord[]>([]);
 const vocabulary = ref<VocabularyItem[]>([]);
 const styles = ref<StylePrompt[]>([]);
@@ -41,10 +48,9 @@ const hotkeyRecording = ref(false);
 const configuringHotkey = ref(false);
 const holdHotkeyController = shallowRef<ReturnType<typeof createHoldHotkeyController> | null>(null);
 const audioRecorder = createAudioRecorder();
-const registeredGlobalShortcut = ref<string | null>(null);
-const recorderWindow = shallowRef<Window | null>(null);
 let recordingStartPromise: Promise<void> | null = null;
 let unlistenModifierHotkey: (() => void) | null = null;
+const RECORDER_OVERLAY_SIZE = { width: 256, height: 52 };
 
 const currentPage = computed(() => activePage.value);
 const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
@@ -62,25 +68,17 @@ async function refreshAll() {
   debugLog('refreshing app data');
   dashboard.value = await getDashboard();
   config.value = await getConfig();
+  providers.value = await listProviderConfigs();
   records.value = await listRecords();
   vocabulary.value = await listVocabulary();
   styles.value = await listStylePrompts();
   debugLog('app data refreshed', {
     hotkey: config.value.hotkey,
+    providers: providers.value.length,
     records: records.value.length,
     vocabulary: vocabulary.value.length,
     styles: styles.value.length,
   });
-}
-
-async function runSimulation() {
-  busy.value = true;
-  try {
-    await simulateRecognition();
-    await refreshAll();
-  } finally {
-    busy.value = false;
-  }
 }
 
 function startHotkeyRecording() {
@@ -98,11 +96,13 @@ async function stopHotkeyRecording() {
 }
 
 function handleRuntimeKeyDown(event: KeyboardEvent) {
+  if (isTauriRuntime) return;
   if (!runtimeHotkeyEnabled.value) return;
   holdHotkeyController.value?.handleKeyDown(event);
 }
 
 function handleRuntimeKeyUp(event: KeyboardEvent) {
+  if (isTauriRuntime) return;
   if (!runtimeHotkeyEnabled.value) return;
   holdHotkeyController.value?.handleKeyUp(event);
 }
@@ -115,6 +115,42 @@ async function persistConfig(nextConfig: AppConfig) {
     await refreshAll();
     await registerRuntimeHotkey(config.value.hotkey);
     debugLog('config saved');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function persistProvider(nextProvider: ProviderConfig) {
+  saving.value = true;
+  try {
+    debugLog('saving provider config', { provider: nextProvider.provider, model: nextProvider.model, enabled: nextProvider.enabled });
+    await saveProviderConfig(nextProvider);
+    await refreshAll();
+    debugLog('provider config saved');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function activateProvider(id: number) {
+  saving.value = true;
+  try {
+    debugLog('selecting provider config', { id });
+    config.value = await selectProviderConfig(id);
+    await refreshAll();
+    await registerRuntimeHotkey(config.value.hotkey);
+    debugLog('provider config selected');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function removeProvider(id: number) {
+  saving.value = true;
+  try {
+    debugLog('deleting provider config', { id });
+    providers.value = await deleteProviderConfig(id);
+    await refreshAll();
   } finally {
     saving.value = false;
   }
@@ -164,67 +200,49 @@ async function finishRecording() {
 
 async function showRecorderOverlay(state: 'recording' | 'processing' | 'error') {
   if (!isTauriRuntime) return;
-  const overlay = await getRecorderWindow();
   await emitTo('recorder', 'recorder-state', { state });
-  await positionRecorderOverlay(overlay);
-  await overlay.show();
+  await positionRecorderOverlay();
+  await showRecorderOverlayNoActivate();
 }
 
 async function hideRecorderOverlay() {
   if (!isTauriRuntime) return;
-  const overlay = await getRecorderWindow();
-  await overlay.hide();
+  await hideRecorderOverlayWindow();
 }
 
-async function getRecorderWindow() {
-  if (!recorderWindow.value) {
-    recorderWindow.value = (await Window.getByLabel('recorder')) ?? new Window('recorder');
-  }
-  return recorderWindow.value;
-}
-
-async function positionRecorderOverlay(overlay: Window) {
-  const monitor = await primaryMonitor().catch(() => null);
+async function positionRecorderOverlay() {
+  const monitor = await resolveRecorderMonitor();
   if (!monitor) return;
-  const width = 360;
-  const height = 72;
-  const workArea = monitor.workArea;
-  const x = workArea.position.x / monitor.scaleFactor + (workArea.size.width / monitor.scaleFactor - width) / 2;
-  const y = workArea.position.y / monitor.scaleFactor + workArea.size.height / monitor.scaleFactor - height - 24;
-  await overlay.setPosition(new LogicalPosition(Math.round(x), Math.round(y))).catch(() => undefined);
+  const position = calculateRecorderOverlayPosition({
+    workArea: monitor.workArea,
+    scaleFactor: monitor.scaleFactor,
+    overlaySize: RECORDER_OVERLAY_SIZE,
+    marginBottom: 18,
+  });
+  await setRecorderOverlayPosition(position.x, position.y).catch(() => undefined);
+}
+
+async function resolveRecorderMonitor(): Promise<Monitor | null> {
+  const cursor = await cursorPosition().catch(() => null);
+  if (cursor) {
+    const monitor = await monitorFromPoint(cursor.x, cursor.y).catch(() => null);
+    if (monitor) return monitor;
+  }
+
+  return (await currentMonitor().catch(() => null)) ?? (await primaryMonitor().catch(() => null));
 }
 
 async function registerRuntimeHotkey(hotkey?: string) {
   if (!isTauriRuntime) return;
-  if (registeredGlobalShortcut.value) {
-    debugLog('unregistering global shortcut', { shortcut: registeredGlobalShortcut.value });
-    await unregister(registeredGlobalShortcut.value).catch(() => undefined);
-    registeredGlobalShortcut.value = null;
-  }
-  await setModifierHotkeyMonitor(null).catch((error) => console.error('[saynow] failed to stop modifier hotkey monitor', error));
+  await setHotkeyMonitor(null).catch((error) => console.error('[saynow] failed to stop hotkey monitor', error));
   if (!hotkey || configuringHotkey.value) {
     debugLog('runtime hotkey disabled', { hotkey, configuringHotkey: configuringHotkey.value });
     return;
   }
 
-  if (isModifierOnlyHotkey(hotkey)) {
-    const parts = toModifierHotkeyParts(hotkey);
-    debugLog('using native modifier hotkey monitor', { hotkey, parts });
-    await setModifierHotkeyMonitor(parts);
-    return;
-  }
-
-  const shortcut = toGlobalShortcut(hotkey);
-  debugLog('registering global shortcut', { hotkey, shortcut });
-  await register(shortcut, (event) => {
-    debugLog('global shortcut event', event);
-    if (event.state === 'Pressed') startHotkeyRecording();
-    if (event.state === 'Released') {
-      void stopHotkeyRecording();
-    }
-  });
-  registeredGlobalShortcut.value = shortcut;
-  debugLog('global shortcut registered', { shortcut });
+  const parts = toHotkeyParts(hotkey);
+  debugLog('using native hotkey monitor', { hotkey, parts });
+  await setHotkeyMonitor(parts);
 }
 
 async function createVocabularyTerms(terms: string[]) {
@@ -298,26 +316,30 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleRuntimeKeyDown, true);
   window.removeEventListener('keyup', handleRuntimeKeyUp, true);
   unlistenModifierHotkey?.();
-  void setModifierHotkeyMonitor(null).catch(() => undefined);
-  if (registeredGlobalShortcut.value) {
-    void unregister(registeredGlobalShortcut.value);
-  }
+  void setHotkeyMonitor(null).catch(() => undefined);
 });
 </script>
 
 <template>
   <AppShell :active-page="activePage" @navigate="activePage = $event">
-    <HomePage v-if="currentPage === 'home'" :dashboard="dashboard" :busy="busy" :recording="hotkeyRecording" @simulate="runSimulation" />
+    <HomePage v-if="currentPage === 'home'" :dashboard="dashboard" />
     <ConfigPage
       v-else-if="currentPage === 'config'"
       :config="config"
+      :providers="providers"
       :saving="saving"
       @save="persistConfig"
+      @save-provider="persistProvider"
+      @select-provider="activateProvider"
+      @delete-provider="removeProvider"
       @hotkey-recording-change="configuringHotkey = $event"
     />
     <DataPage
       v-else-if="currentPage === 'data'"
       :records="records"
+    />
+    <PersonalizationPage
+      v-else-if="currentPage === 'personalization'"
       :vocabulary="vocabulary"
       :styles="styles"
       @add-vocabulary-terms="createVocabularyTerms"

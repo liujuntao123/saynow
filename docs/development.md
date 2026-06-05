@@ -37,7 +37,7 @@ WSL 中可以验证前端界面、领域逻辑、SQLite 持久化、Provider pay
 
 MVP 内置两个模板：
 
-- MiMo-v2.5：`https://api.mimo-v2.com/v1`
+- MiMo-v2.5：`https://api.xiaomimimo.com/v1`
 - Qwen3.5-Omni：`https://dashscope.aliyuncs.com/compatible-mode/v1`
 
 模型调用以 OpenAI-compatible Chat Completions 为基础。不同供应商对音频字段可能有细微差异，正式联调时应在 `src-tauri/src/provider.rs` 中新增供应商级 payload 适配。

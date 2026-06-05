@@ -30,6 +30,15 @@ export interface AppConfig {
   hotkey: string;
 }
 
+export interface ProviderConfig {
+  id: number;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  apiKeyRef: string;
+  enabled: boolean;
+}
+
 export interface VocabularyItem {
   id: number;
   term: string;

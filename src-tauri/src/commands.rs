@@ -1,12 +1,17 @@
+use std::io::BufRead;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    db::{AppConfig, AppDb},
+    db::{AppConfig, AppDb, ProviderConfig},
     models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem},
     platform::{current_platform_status, inject_text, PlatformStatus},
     prompt::build_prompt_context,
-    provider::{build_openai_compatible_payload, extract_openai_compatible_text},
+    provider::{
+        build_openai_compatible_payload, extract_openai_compatible_text, first_qwen_stream_text,
+        is_qwen_provider, push_qwen_stream_line,
+    },
     stats::{aggregate_usage_stats, UsageStats},
 };
 
@@ -26,6 +31,13 @@ pub struct RecognitionAudioInput {
     pub mime_type: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecorderTranscriptPayload {
+    pub text: String,
+    pub done: bool,
+}
+
 pub fn dashboard_data(db: &AppDb) -> Result<DashboardData, String> {
     let records = db.list_records(50).map_err(|error| error.to_string())?;
     Ok(DashboardData {
@@ -42,6 +54,31 @@ pub fn get_config_data(db: &AppDb) -> Result<AppConfig, String> {
 pub fn save_config_data(db: &AppDb, config: AppConfig) -> Result<AppConfig, String> {
     db.save_config(&config).map_err(|error| error.to_string())?;
     Ok(config)
+}
+
+pub fn list_provider_configs_data(db: &AppDb) -> Result<Vec<ProviderConfig>, String> {
+    db.list_provider_configs()
+        .map_err(|error| error.to_string())
+}
+
+pub fn save_provider_config_data(
+    db: &AppDb,
+    provider: ProviderConfig,
+) -> Result<Vec<ProviderConfig>, String> {
+    db.save_provider_config(&provider)
+        .map_err(|error| error.to_string())?;
+    list_provider_configs_data(db)
+}
+
+pub fn select_provider_config_data(db: &AppDb, id: i64) -> Result<AppConfig, String> {
+    db.select_provider_config(id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn delete_provider_config_data(db: &AppDb, id: i64) -> Result<Vec<ProviderConfig>, String> {
+    db.delete_provider_config(id)
+        .map_err(|error| error.to_string())?;
+    list_provider_configs_data(db)
 }
 
 pub fn list_records_data(db: &AppDb) -> Result<Vec<RecognitionRecord>, String> {
@@ -121,6 +158,17 @@ pub fn recognize_audio_data(
     db: &AppDb,
     input: RecognitionAudioInput,
 ) -> Result<RecognitionRecord, String> {
+    recognize_audio_data_with_transcript(db, input, |_| {})
+}
+
+pub fn recognize_audio_data_with_transcript<F>(
+    db: &AppDb,
+    input: RecognitionAudioInput,
+    on_transcript: F,
+) -> Result<RecognitionRecord, String>
+where
+    F: FnMut(String),
+{
     eprintln!(
         "[saynow] recognize_audio started; duration={}s mime={} base64_len={}",
         input.duration_seconds,
@@ -137,18 +185,23 @@ pub fn recognize_audio_data(
     let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
     let records = db.list_records(10).map_err(|error| error.to_string())?;
     let prompt = build_prompt_context(&vocabulary, &styles, &records);
-    let format = audio_format_from_mime(&input.mime_type);
     eprintln!(
-        "[saynow] recognize_audio building request; provider={} model={} format={} prompt_chars={}",
+        "[saynow] recognize_audio building request; provider={} model={} mime={} prompt_chars={}",
         config.provider,
         config.model,
-        format,
+        input.mime_type,
         prompt.chars().count()
     );
-    let payload =
-        build_openai_compatible_payload(&config.model, &prompt, &input.audio_base64, &format);
+    let payload = build_openai_compatible_payload(
+        &config.provider,
+        &config.model,
+        &prompt,
+        &input.audio_base64,
+        &input.mime_type,
+    );
 
-    let recognition_result = call_openai_compatible_chat(&config, payload);
+    let recognition_result =
+        call_openai_compatible_chat_with_transcript(&config, payload, on_transcript);
     let text = match recognition_result {
         Ok(text) => text,
         Err(error) => return insert_failed_record(db, &error, input.duration_seconds.max(1)),
@@ -170,40 +223,77 @@ pub fn recognize_audio_data(
     latest_record(db)
 }
 
-fn call_openai_compatible_chat(
+fn call_openai_compatible_chat_with_transcript<F>(
     config: &crate::db::AppConfig,
     payload: Value,
-) -> Result<String, String> {
+    mut on_transcript: F,
+) -> Result<String, String>
+where
+    F: FnMut(String),
+{
     let api_key = resolve_api_key(&config.api_key_ref)?;
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     eprintln!(
         "[saynow] sending recognition request; url={} model={}",
         url, config.model
     );
-    let response = reqwest::blocking::Client::new()
-        .post(url)
-        .bearer_auth(api_key)
+    let request = reqwest::blocking::Client::new().post(url);
+    let request = if uses_mimo_api_key_header(config) {
+        request.header("api-key", api_key)
+    } else {
+        request.bearer_auth(api_key)
+    };
+    let response = request
         .json(&payload)
         .send()
         .map_err(|error| format!("识别请求失败：{error}"))?;
     let status = response.status();
     eprintln!("[saynow] recognition response status={status}");
-    let body = response
-        .text()
-        .map_err(|error| format!("读取识别响应失败：{error}"))?;
     if !status.is_success() {
+        let body = response
+            .text()
+            .map_err(|error| format!("读取识别响应失败：{error}"))?;
         return Err(format!("识别请求返回 {status}：{body}"));
     }
 
-    let json: Value =
-        serde_json::from_str(&body).map_err(|error| format!("识别响应不是有效 JSON：{error}"))?;
-    let text = extract_openai_compatible_text(&json)
-        .ok_or_else(|| "识别响应中没有可用文本。".to_string())?;
+    let text = if uses_qwen_stream_response(config) {
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+        let reader = std::io::BufReader::new(response);
+        for line in reader.lines() {
+            let line = line.map_err(|error| format!("读取识别响应失败：{error}"))?;
+            if let Some(text) = push_qwen_stream_line(&line, &mut content, &mut reasoning_content) {
+                on_transcript(text);
+            }
+        }
+        first_qwen_stream_text(content, reasoning_content)
+            .ok_or_else(|| "识别响应中没有可用文本。".to_string())?
+    } else {
+        let body = response
+            .text()
+            .map_err(|error| format!("读取识别响应失败：{error}"))?;
+        let json: Value = serde_json::from_str(&body)
+            .map_err(|error| format!("识别响应不是有效 JSON：{error}"))?;
+        extract_openai_compatible_text(&json)
+            .ok_or_else(|| "识别响应中没有可用文本。".to_string())?
+    };
     eprintln!(
         "[saynow] recognition response parsed; text_chars={}",
         text.chars().count()
     );
     Ok(text)
+}
+
+fn uses_qwen_stream_response(config: &crate::db::AppConfig) -> bool {
+    is_qwen_provider(&config.provider) || config.model.to_ascii_lowercase().contains("qwen")
+}
+
+fn uses_mimo_api_key_header(config: &crate::db::AppConfig) -> bool {
+    config.provider.eq_ignore_ascii_case("mimo")
+        || config
+            .base_url
+            .to_ascii_lowercase()
+            .contains("xiaomimimo.com")
 }
 
 fn resolve_api_key(api_key_ref: &str) -> Result<String, String> {
@@ -233,24 +323,6 @@ fn resolve_api_key(api_key_ref: &str) -> Result<String, String> {
     }
 }
 
-fn audio_format_from_mime(mime_type: &str) -> String {
-    let mime = mime_type.to_ascii_lowercase();
-    if mime.contains("wav") {
-        "wav"
-    } else if mime.contains("mpeg") || mime.contains("mp3") {
-        "mp3"
-    } else if mime.contains("ogg") {
-        "ogg"
-    } else if mime.contains("webm") {
-        "webm"
-    } else if mime.contains("mp4") || mime.contains("m4a") {
-        "mp4"
-    } else {
-        "webm"
-    }
-    .to_string()
-}
-
 fn insert_failed_record(
     db: &AppDb,
     error: &str,
@@ -273,7 +345,7 @@ fn latest_record(db: &AppDb) -> Result<RecognitionRecord, String> {
 
 #[cfg(feature = "desktop")]
 mod tauri_commands {
-    use tauri::State;
+    use tauri::{Emitter, Manager, State};
 
     use super::*;
 
@@ -290,6 +362,32 @@ mod tauri_commands {
     #[tauri::command]
     pub fn save_config(db: State<'_, AppDb>, config: AppConfig) -> Result<AppConfig, String> {
         save_config_data(&db, config)
+    }
+
+    #[tauri::command]
+    pub fn list_provider_configs(db: State<'_, AppDb>) -> Result<Vec<ProviderConfig>, String> {
+        list_provider_configs_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn save_provider_config(
+        db: State<'_, AppDb>,
+        provider: ProviderConfig,
+    ) -> Result<Vec<ProviderConfig>, String> {
+        save_provider_config_data(&db, provider)
+    }
+
+    #[tauri::command]
+    pub fn select_provider_config(db: State<'_, AppDb>, id: i64) -> Result<AppConfig, String> {
+        select_provider_config_data(&db, id)
+    }
+
+    #[tauri::command]
+    pub fn delete_provider_config(
+        db: State<'_, AppDb>,
+        id: i64,
+    ) -> Result<Vec<ProviderConfig>, String> {
+        delete_provider_config_data(&db, id)
     }
 
     #[tauri::command]
@@ -355,19 +453,96 @@ mod tauri_commands {
     }
 
     #[tauri::command]
-    pub fn recognize_audio(
+    pub fn recognize_audio<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
         db: State<'_, AppDb>,
         input: RecognitionAudioInput,
     ) -> Result<RecognitionRecord, String> {
-        recognize_audio_data(&db, input)
+        let stream_app = app.clone();
+        let result = recognize_audio_data_with_transcript(&db, input, move |text| {
+            let _ = stream_app.emit_to(
+                "recorder",
+                "recorder-transcript",
+                RecorderTranscriptPayload { text, done: false },
+            );
+        });
+        if let Ok(record) = &result {
+            let _ = app.emit_to(
+                "recorder",
+                "recorder-transcript",
+                RecorderTranscriptPayload {
+                    text: record.text.clone(),
+                    done: true,
+                },
+            );
+        }
+        result
     }
 
     #[tauri::command]
-    pub fn set_modifier_hotkey_monitor<R: tauri::Runtime>(
+    pub fn show_recorder_overlay_no_activate<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let window = recorder_window(&app)?;
+
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = window
+                .hwnd()
+                .map_err(|error| format!("无法获取录音浮窗句柄：{error}"))?;
+            crate::platform::show_no_activate_window(hwnd.0 as isize)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            window.show().map_err(|error| error.to_string())
+        }
+    }
+
+    #[tauri::command]
+    pub fn hide_recorder_overlay<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let window = recorder_window(&app)?;
+
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = window
+                .hwnd()
+                .map_err(|error| format!("无法获取录音浮窗句柄：{error}"))?;
+            crate::platform::hide_window(hwnd.0 as isize)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            window.hide().map_err(|error| error.to_string())
+        }
+    }
+
+    #[tauri::command]
+    pub fn set_recorder_overlay_position<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+        x: i32,
+        y: i32,
+    ) -> Result<(), String> {
+        recorder_window(&app)?
+            .set_position(tauri::PhysicalPosition::new(x, y))
+            .map_err(|error| error.to_string())
+    }
+
+    fn recorder_window<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+    ) -> Result<tauri::WebviewWindow<R>, String> {
+        app.get_webview_window("recorder")
+            .ok_or_else(|| "录音浮窗不存在。".to_string())
+    }
+
+    #[tauri::command]
+    pub fn set_hotkey_monitor<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
         parts: Option<Vec<String>>,
     ) -> Result<(), String> {
-        crate::platform::set_modifier_hotkey_monitor(app, parts)
+        crate::platform::set_hotkey_monitor(app, parts)
     }
 
     pub fn handlers<R: tauri::Runtime>(
@@ -376,6 +551,10 @@ mod tauri_commands {
             get_dashboard,
             get_config,
             save_config,
+            list_provider_configs,
+            save_provider_config,
+            select_provider_config,
+            delete_provider_config,
             list_records,
             list_vocabulary,
             add_vocabulary,
@@ -387,7 +566,10 @@ mod tauri_commands {
             delete_style_prompt,
             simulate_recognition,
             recognize_audio,
-            set_modifier_hotkey_monitor
+            show_recorder_overlay_no_activate,
+            hide_recorder_overlay,
+            set_recorder_overlay_position,
+            set_hotkey_monitor
         ])
     }
 }
@@ -443,10 +625,37 @@ mod tests {
     }
 
     #[test]
-    fn resolves_supported_audio_formats_from_mime_types() {
-        assert_eq!(audio_format_from_mime("audio/wav"), "wav");
-        assert_eq!(audio_format_from_mime("audio/webm;codecs=opus"), "webm");
-        assert_eq!(audio_format_from_mime("audio/mpeg"), "mp3");
+    fn commands_manage_provider_configs() {
+        let db = AppDb::in_memory().unwrap();
+
+        let providers = save_provider_config_data(
+            &db,
+            ProviderConfig {
+                id: 0,
+                provider: "Qwen".to_string(),
+                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+                model: "qwen3.5-omni-plus".to_string(),
+                api_key_ref: "credential-manager:qwen".to_string(),
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let qwen = providers
+            .iter()
+            .find(|provider| provider.provider == "Qwen")
+            .unwrap();
+        assert!(qwen.enabled);
+        assert_eq!(get_config_data(&db).unwrap().model, "qwen3.5-omni-plus");
+
+        let mimo = providers
+            .iter()
+            .find(|provider| provider.provider == "MiMo")
+            .unwrap();
+        let config = select_provider_config_data(&db, mimo.id).unwrap();
+        assert_eq!(config.provider, "MiMo");
+
+        let providers = delete_provider_config_data(&db, qwen.id).unwrap();
+        assert!(providers.iter().all(|provider| provider.provider != "Qwen"));
     }
 
     #[test]

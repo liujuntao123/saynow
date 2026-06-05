@@ -1,7 +1,12 @@
 node_modules/
 dist/
 src-tauri/target/
+src-tauri/gen/
 src-tauri/saynow.sqlite
+ui-previews/
+tmp-screens/
+docs/superpowers/plans/
+docs/qwen-omni.md
 *.log
 .DS_Store
 .env

@@ -4,6 +4,8 @@ const modifierAliases: Record<string, string> = {
   Alt: 'Alt',
   Meta: 'Meta',
 };
+const standaloneModifierHoldDelayMs = 300;
+const modifierKeys = ['Ctrl', 'Alt', 'Shift', 'Meta'];
 
 export function normalizeHotkeyKey(key: string): string {
   if (key === ' ') return 'Space';
@@ -36,7 +38,7 @@ export function formatHotkey(event: KeyboardEvent): string | null {
 
 export function isModifierOnlyHotkey(hotkey: string): boolean {
   const parts = hotkeyParts(hotkey);
-  return parts.length > 0 && parts.every((part) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
+  return parts.length > 0 && parts.every((part) => modifierKeys.includes(part));
 }
 
 export interface HoldHotkeyHandlers {
@@ -64,7 +66,7 @@ function eventMatchesHotkey(event: KeyboardEvent, hotkey: string): boolean {
   const hasAlt = parts.includes('Alt');
   const hasShift = parts.includes('Shift');
   const hasMeta = parts.includes('Meta');
-  const nonModifierParts = parts.filter((part) => !['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part));
+  const nonModifierParts = parts.filter((part) => !modifierKeys.includes(part));
 
   if (Boolean(event.ctrlKey) !== hasCtrl || Boolean(event.altKey) !== hasAlt || Boolean(event.shiftKey) !== hasShift || Boolean(event.metaKey) !== hasMeta) {
     return false;
@@ -82,24 +84,64 @@ function eventReleasesHotkey(event: KeyboardEvent, hotkey: string): boolean {
   return hotkeyParts(hotkey).includes(releasedKey);
 }
 
+function isStandaloneModifierHotkey(hotkey: string): boolean {
+  const parts = hotkeyParts(hotkey);
+  return parts.length === 1 && modifierKeys.includes(parts[0]);
+}
+
 export function createHoldHotkeyController(hotkey: string, handlers: HoldHotkeyHandlers) {
   let active = false;
+  let pendingTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+
+  function clearPending() {
+    if (!pendingTimer) return;
+    globalThis.clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+
+  function start() {
+    active = true;
+    handlers.onStart();
+  }
 
   return {
     get active() {
       return active;
     },
     handleKeyDown(event: KeyboardEvent) {
-      if (active || event.repeat || !eventMatchesHotkey(event, hotkey)) return;
-      active = true;
-      handlers.onStart();
+      if (active && isStandaloneModifierHotkey(hotkey) && !eventMatchesHotkey(event, hotkey)) {
+        active = false;
+        handlers.onStop();
+        return;
+      }
+
+      if (pendingTimer && !eventMatchesHotkey(event, hotkey)) {
+        clearPending();
+        return;
+      }
+
+      if (active || pendingTimer || event.repeat || !eventMatchesHotkey(event, hotkey)) return;
+      if (isStandaloneModifierHotkey(hotkey)) {
+        pendingTimer = globalThis.setTimeout(() => {
+          pendingTimer = null;
+          start();
+        }, standaloneModifierHoldDelayMs);
+        return;
+      }
+
+      start();
     },
     handleKeyUp(event: KeyboardEvent) {
+      if (pendingTimer && eventReleasesHotkey(event, hotkey)) {
+        clearPending();
+        return;
+      }
       if (!active || !eventReleasesHotkey(event, hotkey)) return;
       active = false;
       handlers.onStop();
     },
     cancel() {
+      clearPending();
       if (!active) return;
       active = false;
       handlers.onStop();

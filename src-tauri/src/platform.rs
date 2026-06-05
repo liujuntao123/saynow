@@ -134,6 +134,7 @@ mod platform_impl {
     const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(20);
     const HOTKEY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
+    const STANDALONE_MODIFIER_HOLD_DELAY: Duration = Duration::from_millis(300);
     static MONITOR: OnceLock<Mutex<Option<ModifierHotkeyMonitor>>> = OnceLock::new();
     static HOOK_CONTEXT: OnceLock<Mutex<Option<HookContext>>> = OnceLock::new();
     static INPUT_TARGET: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
@@ -147,9 +148,15 @@ mod platform_impl {
         hotkey: HotkeySpec,
         pressed: HashSet<ModifierKey>,
         active: bool,
+        pending_modifier: Option<PendingModifierHotkey>,
         release_miss_count: u8,
         emit_state: Box<dyn Fn(&str) + Send + Sync>,
         should_stop: AtomicBool,
+    }
+
+    struct PendingModifierHotkey {
+        key: ModifierKey,
+        started_at: Instant,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -387,6 +394,7 @@ mod platform_impl {
                 hotkey,
                 pressed: HashSet::new(),
                 active: false,
+                pending_modifier: None,
                 release_miss_count: 0,
                 emit_state,
                 should_stop: AtomicBool::new(false),
@@ -419,6 +427,7 @@ mod platform_impl {
                     DispatchMessageW(&message);
                 }
             }
+            check_pending_modifier_hotkey();
             if last_health_check.elapsed() >= HOTKEY_HEALTH_CHECK_INTERVAL {
                 check_hotkey_health();
                 last_health_check = Instant::now();
@@ -460,19 +469,46 @@ mod platform_impl {
             return false;
         }
 
+        let standalone_modifier = standalone_modifier_hotkey(&context.hotkey);
         let owned_system_modifier = modifier.is_some_and(|key| {
             matches!(key, ModifierKey::Alt | ModifierKey::Meta)
                 && context.hotkey.modifiers.contains(&key)
+                && standalone_modifier != Some(key)
         });
 
         if pressed {
             context.release_miss_count = 0;
+            if let Some(pending) = &context.pending_modifier {
+                if modifier != Some(pending.key) {
+                    context.pending_modifier = None;
+                    eprintln!(
+                        "[saynow] native standalone modifier hotkey cancelled by combination"
+                    );
+                }
+            }
             if let Some(key) = modifier {
                 context.pressed.insert(key);
             }
 
-            if hotkey_matches(&context.hotkey, &context.pressed, vk_code) {
+            if context.active
+                && standalone_modifier_hotkey(&context.hotkey).is_some()
+                && !hotkey_contains_key(&context.hotkey, vk_code, modifier)
+            {
+                release_context_hotkey(context, "standalone modifier interrupted");
+                return owned_system_modifier;
+            }
+
+            if hotkey_matches(&context.hotkey, &context.pressed, vk_code, modifier) {
                 if !context.active {
+                    if standalone_modifier == modifier {
+                        if context.pending_modifier.is_none() {
+                            context.pending_modifier = modifier.map(|key| PendingModifierHotkey {
+                                key,
+                                started_at: Instant::now(),
+                            });
+                        }
+                        return false;
+                    }
                     context.active = true;
                     let _ = remember_input_target();
                     eprintln!("[saynow] native hotkey pressed");
@@ -487,11 +523,15 @@ mod platform_impl {
 
         let releases_active_hotkey =
             context.active && hotkey_contains_key(&context.hotkey, vk_code, modifier);
+        let releases_pending_hotkey = context
+            .pending_modifier
+            .as_ref()
+            .is_some_and(|pending| modifier == Some(pending.key));
+        if releases_pending_hotkey {
+            context.pending_modifier = None;
+        }
         if releases_active_hotkey {
-            context.active = false;
-            context.release_miss_count = 0;
-            eprintln!("[saynow] native hotkey released");
-            (context.emit_state)("Released");
+            release_context_hotkey(context, "released");
         }
 
         if let Some(key) = modifier {
@@ -500,9 +540,22 @@ mod platform_impl {
         owned_system_modifier || releases_active_hotkey
     }
 
-    fn hotkey_matches(hotkey: &HotkeySpec, pressed: &HashSet<ModifierKey>, vk_code: u32) -> bool {
-        hotkey.modifiers.iter().all(|part| pressed.contains(part))
-            && hotkey.trigger.map_or(true, |trigger| trigger == vk_code)
+    fn hotkey_matches(
+        hotkey: &HotkeySpec,
+        pressed: &HashSet<ModifierKey>,
+        vk_code: u32,
+        modifier: Option<ModifierKey>,
+    ) -> bool {
+        if pressed.len() != hotkey.modifiers.len()
+            || !hotkey.modifiers.iter().all(|part| pressed.contains(part))
+        {
+            return false;
+        }
+
+        match hotkey.trigger {
+            Some(trigger) => trigger == vk_code,
+            None => modifier.is_some_and(|key| hotkey.modifiers.contains(&key)),
+        }
     }
 
     fn hotkey_contains_key(
@@ -515,6 +568,45 @@ mod platform_impl {
         } else {
             hotkey.trigger == Some(vk_code)
         }
+    }
+
+    fn standalone_modifier_hotkey(hotkey: &HotkeySpec) -> Option<ModifierKey> {
+        if hotkey.trigger.is_none() && hotkey.modifiers.len() == 1 {
+            hotkey.modifiers.iter().next().copied()
+        } else {
+            None
+        }
+    }
+
+    fn check_pending_modifier_hotkey() {
+        let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
+        let Ok(mut context) = context_lock.lock() else {
+            return;
+        };
+        let Some(context) = context.as_mut() else {
+            return;
+        };
+        if context.should_stop.load(Ordering::Relaxed) || context.active {
+            return;
+        }
+
+        let Some(pending) = context.pending_modifier.as_ref() else {
+            return;
+        };
+        if pending.started_at.elapsed() < STANDALONE_MODIFIER_HOLD_DELAY {
+            return;
+        }
+        if !physical_hotkey_is_down(&context.hotkey) {
+            context.pending_modifier = None;
+            return;
+        }
+
+        context.pending_modifier = None;
+        context.active = true;
+        context.release_miss_count = 0;
+        let _ = remember_input_target();
+        eprintln!("[saynow] native standalone modifier hotkey pressed after hold");
+        (context.emit_state)("Pressed");
     }
 
     fn check_hotkey_health() {
@@ -552,9 +644,21 @@ mod platform_impl {
 
     fn physical_hotkey_is_down(hotkey: &HotkeySpec) -> bool {
         hotkey.modifiers.iter().all(|key| modifier_is_down(*key))
+            && all_unconfigured_modifiers_are_up(hotkey)
             && hotkey
                 .trigger
                 .map_or(true, |trigger| virtual_key_is_down(trigger))
+    }
+
+    fn all_unconfigured_modifiers_are_up(hotkey: &HotkeySpec) -> bool {
+        [
+            ModifierKey::Ctrl,
+            ModifierKey::Alt,
+            ModifierKey::Shift,
+            ModifierKey::Meta,
+        ]
+        .into_iter()
+        .all(|key| hotkey.modifiers.contains(&key) || !modifier_is_down(key))
     }
 
     fn modifier_is_down(key: ModifierKey) -> bool {
@@ -624,14 +728,22 @@ mod platform_impl {
         if let Ok(mut context) = context_lock.lock() {
             if let Some(context) = context.as_mut() {
                 if context.active {
-                    context.active = false;
-                    context.release_miss_count = 0;
-                    context.pressed.clear();
-                    eprintln!("[saynow] native hotkey released; reason={reason}");
-                    (context.emit_state)("Released");
+                    release_context_hotkey(context, reason);
                 }
+                context.pending_modifier = None;
             }
         }
+    }
+
+    fn release_context_hotkey(context: &mut HookContext, reason: &str) {
+        if !context.active {
+            return;
+        }
+        context.active = false;
+        context.pending_modifier = None;
+        context.release_miss_count = 0;
+        eprintln!("[saynow] native hotkey released; reason={reason}");
+        (context.emit_state)("Released");
     }
 
     fn clear_hook_context() {

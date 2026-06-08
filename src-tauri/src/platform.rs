@@ -229,7 +229,6 @@ mod platform_impl {
     #[derive(Debug, Clone)]
     struct HotkeySpec {
         modifiers: HashSet<ModifierKey>,
-        trigger: Option<u32>,
         required_keys: HashSet<HotkeyKey>,
     }
 
@@ -400,7 +399,6 @@ mod platform_impl {
             .collect();
         Ok(HotkeySpec {
             modifiers,
-            trigger,
             required_keys,
         })
     }
@@ -659,7 +657,7 @@ mod platform_impl {
         if started_at.elapsed() < HOTKEY_HOLD_DELAY {
             return;
         }
-        if !physical_hotkey_is_down(&context.hotkey) {
+        if !tracked_hotkey_is_down(context) {
             cancel_hotkey_candidate(context);
             return;
         }
@@ -684,11 +682,13 @@ mod platform_impl {
 
         if !context.state.recording() {
             context.release_miss_count = 0;
-            retain_physically_pressed_keys(context);
+            if matches!(context.state, HotkeyState::Idle) {
+                retain_physically_pressed_keys(context);
+            }
             return;
         }
 
-        if physical_hotkey_is_down(&context.hotkey) {
+        if tracked_hotkey_is_down(context) {
             context.release_miss_count = 0;
             return;
         }
@@ -700,12 +700,14 @@ mod platform_impl {
         }
     }
 
-    fn physical_hotkey_is_down(hotkey: &HotkeySpec) -> bool {
-        hotkey.modifiers.iter().all(|key| modifier_is_down(*key))
-            && all_unconfigured_modifiers_are_up(hotkey)
-            && hotkey
-                .trigger
-                .map_or(true, |trigger| virtual_key_is_down(trigger))
+    fn tracked_hotkey_is_down(context: &HookContext) -> bool {
+        hotkey_exactly_pressed(&context.hotkey, &context.pressed)
+            && all_unconfigured_modifiers_are_up(&context.hotkey)
+            && context
+                .hotkey
+                .required_keys
+                .iter()
+                .all(|key| context.swallowed_keys.contains(key) || hotkey_key_is_down(*key))
     }
 
     fn all_unconfigured_modifiers_are_up(hotkey: &HotkeySpec) -> bool {
@@ -1153,6 +1155,15 @@ mod platform_impl {
 
             assert!(!space_down.swallow);
             assert_eq!(context.state, HotkeyState::Idle);
+        }
+
+        #[test]
+        fn swallowed_candidate_key_still_counts_as_held() {
+            let mut context = context(hotkey(&["Alt"]));
+            let _ = handle_hotkey_key_pressed(&mut context, alt());
+
+            assert!(context.swallowed_keys.contains(&alt()));
+            assert!(tracked_hotkey_is_down(&context));
         }
 
         #[test]

@@ -143,6 +143,9 @@ mod platform_impl {
     const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(20);
     const INPUT_TARGET_SETTLE_DELAY: Duration = Duration::from_millis(80);
     const PASTE_COMPLETION_DELAY: Duration = Duration::from_millis(220);
+    const KEY_CHORD_DELAY: Duration = Duration::from_millis(15);
+    const FOCUS_RESTORE_RETRIES: usize = 3;
+    const FOCUS_RESTORE_RETRY_DELAY: Duration = Duration::from_millis(35);
     const SAYNOW_INPUT_MARKER: usize = 0x5A1E_2026;
     static MONITOR: OnceLock<Mutex<Option<HotkeyMonitor>>> = OnceLock::new();
     static HOOK_CONTEXT: OnceLock<Mutex<Option<HookContext>>> = OnceLock::new();
@@ -221,6 +224,8 @@ mod platform_impl {
             return Err("已写入剪贴板，但无法恢复输入目标窗口，请手动粘贴。".to_string());
         }
         thread::sleep(INPUT_TARGET_SETTLE_DELAY);
+        release_all_modifiers();
+        thread::sleep(KEY_CHORD_DELAY);
         let paste_result = paste_from_clipboard();
         if paste_result.is_ok() {
             thread::sleep(PASTE_COMPLETION_DELAY);
@@ -532,6 +537,10 @@ mod platform_impl {
             handle_hotkey_key_released(context, key)
         };
 
+        if !pressed && modifier.is_some() && !context.state.recording() {
+            clear_stale_non_modifier_keys(context);
+        }
+
         if let Some(reason) = release_reason {
             release_context_hotkey(context, reason);
         }
@@ -656,9 +665,7 @@ mod platform_impl {
 
         if !context.state.recording() {
             context.release_miss_count = 0;
-            if matches!(context.state, HotkeyState::Idle) {
-                retain_physically_pressed_keys(context);
-            }
+            retain_physically_pressed_keys(context);
             return;
         }
 
@@ -736,6 +743,26 @@ mod platform_impl {
         {
             cancel_hotkey_candidate(context);
         }
+    }
+
+    fn clear_stale_non_modifier_keys(context: &mut HookContext) {
+        if context
+            .pressed
+            .iter()
+            .any(|key| matches!(key, HotkeyKey::Modifier(_)))
+        {
+            return;
+        }
+
+        if context.pressed.is_empty() {
+            return;
+        }
+
+        eprintln!(
+            "[saynow] clearing stale non-modifier hotkey state; pressed={:?}",
+            context.pressed
+        );
+        context.pressed.clear();
     }
 
     fn modifier_from_vk(vk_code: u32) -> Option<ModifierKey> {
@@ -946,18 +973,13 @@ mod platform_impl {
     }
 
     fn paste_from_clipboard() -> Result<(), String> {
-        let inputs = [
-            keyboard_input(VK_CONTROL, false),
-            keyboard_input(VK_V, false),
-            keyboard_input(VK_V, true),
-            keyboard_input(VK_CONTROL, true),
-        ];
-        let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-        if sent == inputs.len() as u32 {
-            Ok(())
-        } else {
-            Err("已写入剪贴板，但模拟 Ctrl+V 失败。".to_string())
-        }
+        send_key_down(VK_CONTROL)?;
+        thread::sleep(KEY_CHORD_DELAY);
+        send_key_down(VK_V)?;
+        thread::sleep(KEY_CHORD_DELAY);
+        send_key_up(VK_V)?;
+        thread::sleep(KEY_CHORD_DELAY);
+        send_key_up(VK_CONTROL)
     }
 
     fn focused_child_window(hwnd: HWND) -> Option<HWND> {
@@ -998,11 +1020,27 @@ mod platform_impl {
             );
             return Ok(false);
         }
-        let restored = restore_foreground_window(hwnd, target.focus_hwnd);
+        let restored = restore_foreground_window_with_retry(hwnd, target.focus_hwnd);
         if !restored {
             eprintln!("[saynow] failed to restore input target; target={target:?}");
         }
         Ok(restored)
+    }
+
+    fn restore_foreground_window_with_retry(hwnd: HWND, focus_hwnd: Option<isize>) -> bool {
+        for attempt in 1..=FOCUS_RESTORE_RETRIES {
+            if restore_foreground_window(hwnd, focus_hwnd) {
+                thread::sleep(FOCUS_RESTORE_RETRY_DELAY);
+                if unsafe { GetForegroundWindow() } == hwnd {
+                    return true;
+                }
+            }
+
+            eprintln!("[saynow] input target focus restore attempt {attempt} failed");
+            thread::sleep(FOCUS_RESTORE_RETRY_DELAY);
+        }
+
+        false
     }
 
     fn restore_foreground_window(hwnd: HWND, focus_hwnd: Option<isize>) -> bool {
@@ -1043,6 +1081,45 @@ mod platform_impl {
                     dwExtraInfo: SAYNOW_INPUT_MARKER,
                 },
             },
+        }
+    }
+
+    fn send_key_down(key: VIRTUAL_KEY) -> Result<(), String> {
+        send_keyboard_input(keyboard_input(key, false), "按下")
+    }
+
+    fn send_key_up(key: VIRTUAL_KEY) -> Result<(), String> {
+        send_keyboard_input(keyboard_input(key, true), "释放")
+    }
+
+    fn send_keyboard_input(input: INPUT, action: &str) -> Result<(), String> {
+        let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
+        if sent == 1 {
+            Ok(())
+        } else {
+            Err(format!(
+                "已写入剪贴板，但模拟 Ctrl+V 失败（{action}按键失败）。"
+            ))
+        }
+    }
+
+    fn release_all_modifiers() {
+        for key in [
+            VK_CONTROL,
+            VK_LCONTROL,
+            VK_RCONTROL,
+            VK_SHIFT,
+            VK_LSHIFT,
+            VK_RSHIFT,
+            VK_MENU,
+            VK_LMENU,
+            VK_RMENU,
+            VK_LWIN,
+            VK_RWIN,
+        ] {
+            if virtual_key_is_down(key.0 as u32) {
+                let _ = send_key_up(key);
+            }
         }
     }
 

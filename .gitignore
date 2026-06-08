@@ -7,6 +7,7 @@ ui-previews/
 tmp-screens/
 docs/superpowers/plans/
 docs/qwen-omni.md
+附件/
 *.log
 .DS_Store
 .env

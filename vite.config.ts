@@ -10,5 +10,6 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    exclude: ['**/node_modules/**', '**/dist/**', '**/src-tauri/target/**', '**/附件/**'],
   },
 });

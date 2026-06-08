@@ -5,6 +5,13 @@ function keyEvent(input: Partial<KeyboardEvent>): KeyboardEvent {
   return input as KeyboardEvent;
 }
 
+const standaloneModifierSamples = [
+  { hotkey: 'Ctrl', key: 'Control', state: { ctrlKey: true } },
+  { hotkey: 'Alt', key: 'Alt', state: { altKey: true } },
+  { hotkey: 'Shift', key: 'Shift', state: { shiftKey: true } },
+  { hotkey: 'Meta', key: 'Meta', state: { metaKey: true } },
+] as const;
+
 describe('hotkey recorder', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -36,53 +43,53 @@ describe('hotkey recorder', () => {
     expect(toHotkeyParts('Alt+Shift+K')).toEqual(['Alt', 'Shift', 'K']);
   });
 
-  it('starts recording after a standalone modifier is held and stops when released', () => {
+  it.each(standaloneModifierSamples)('starts recording after standalone $hotkey is held and stops when released', ({ hotkey, key, state }) => {
     vi.useFakeTimers();
     const actions: string[] = [];
-    const controller = createHoldHotkeyController('Ctrl', {
+    const controller = createHoldHotkeyController(hotkey, {
       onStart: () => actions.push('start'),
       onStop: () => actions.push('stop'),
     });
 
-    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
-    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true, repeat: true }));
+    controller.handleKeyDown(keyEvent({ key, ...state }));
+    controller.handleKeyDown(keyEvent({ key, ...state, repeat: true }));
     expect(actions).toEqual([]);
 
     vi.advanceTimersByTime(300);
-    controller.handleKeyUp(keyEvent({ key: 'Control' }));
+    controller.handleKeyUp(keyEvent({ key }));
 
     expect(actions).toEqual(['start', 'stop']);
   });
 
-  it('does not start recording for a short standalone modifier press', () => {
+  it.each(standaloneModifierSamples)('does not start recording for a short standalone $hotkey press', ({ hotkey, key, state }) => {
     vi.useFakeTimers();
     const actions: string[] = [];
-    const controller = createHoldHotkeyController('Alt', {
+    const controller = createHoldHotkeyController(hotkey, {
       onStart: () => actions.push('start'),
       onStop: () => actions.push('stop'),
     });
 
-    controller.handleKeyDown(keyEvent({ key: 'Alt', altKey: true }));
+    controller.handleKeyDown(keyEvent({ key, ...state }));
     vi.advanceTimersByTime(100);
-    controller.handleKeyUp(keyEvent({ key: 'Alt' }));
+    controller.handleKeyUp(keyEvent({ key }));
     vi.advanceTimersByTime(300);
 
     expect(actions).toEqual([]);
   });
 
-  it('does not start recording when a standalone modifier is used with another key', () => {
+  it.each(standaloneModifierSamples)('does not start recording when standalone $hotkey is used with another key', ({ hotkey, key, state }) => {
     vi.useFakeTimers();
     const actions: string[] = [];
-    const controller = createHoldHotkeyController('Alt', {
+    const controller = createHoldHotkeyController(hotkey, {
       onStart: () => actions.push('start'),
       onStop: () => actions.push('stop'),
     });
 
-    controller.handleKeyDown(keyEvent({ key: 'Alt', altKey: true }));
-    controller.handleKeyDown(keyEvent({ key: 'Tab', altKey: true }));
+    controller.handleKeyDown(keyEvent({ key, ...state }));
+    controller.handleKeyDown(keyEvent({ key: 'A', ...state }));
     vi.advanceTimersByTime(300);
-    controller.handleKeyUp(keyEvent({ key: 'Tab', altKey: true }));
-    controller.handleKeyUp(keyEvent({ key: 'Alt' }));
+    controller.handleKeyUp(keyEvent({ key: 'A', ...state }));
+    controller.handleKeyUp(keyEvent({ key }));
 
     expect(actions).toEqual([]);
   });

@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "saynow"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "chrono",

@@ -55,7 +55,7 @@ describe('hotkey recorder', () => {
     controller.handleKeyDown(keyEvent({ key, ...state, repeat: true }));
     expect(actions).toEqual([]);
 
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(500);
     controller.handleKeyUp(keyEvent({ key }));
 
     expect(actions).toEqual(['start', 'stop']);
@@ -72,7 +72,7 @@ describe('hotkey recorder', () => {
     controller.handleKeyDown(keyEvent({ key, ...state }));
     vi.advanceTimersByTime(100);
     controller.handleKeyUp(keyEvent({ key }));
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(500);
 
     expect(actions).toEqual([]);
   });
@@ -87,14 +87,15 @@ describe('hotkey recorder', () => {
 
     controller.handleKeyDown(keyEvent({ key, ...state }));
     controller.handleKeyDown(keyEvent({ key: 'A', ...state }));
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(500);
     controller.handleKeyUp(keyEvent({ key: 'A', ...state }));
     controller.handleKeyUp(keyEvent({ key }));
 
     expect(actions).toEqual([]);
   });
 
-  it('keeps recording while a combination hotkey is held', () => {
+  it('starts recording after a combination hotkey is held', () => {
+    vi.useFakeTimers();
     const actions: string[] = [];
     const controller = createHoldHotkeyController('Ctrl+Space', {
       onStart: () => actions.push('start'),
@@ -104,12 +105,70 @@ describe('hotkey recorder', () => {
     controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
     controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true }));
     controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true, repeat: true }));
+    expect(actions).toEqual([]);
+
+    vi.advanceTimersByTime(500);
     controller.handleKeyUp(keyEvent({ key: ' ' }));
 
     expect(actions).toEqual(['start', 'stop']);
   });
 
+  it('does not start recording for a short combination hotkey press', () => {
+    vi.useFakeTimers();
+    const actions: string[] = [];
+    const controller = createHoldHotkeyController('Ctrl+Space', {
+      onStart: () => actions.push('start'),
+      onStop: () => actions.push('stop'),
+    });
+
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true }));
+    vi.advanceTimersByTime(100);
+    controller.handleKeyUp(keyEvent({ key: ' ' }));
+    vi.advanceTimersByTime(500);
+
+    expect(actions).toEqual([]);
+  });
+
+  it('does not start recording when a combination hotkey is used with another key', () => {
+    vi.useFakeTimers();
+    const actions: string[] = [];
+    const controller = createHoldHotkeyController('Ctrl+Space', {
+      onStart: () => actions.push('start'),
+      onStop: () => actions.push('stop'),
+    });
+
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: 'A', ctrlKey: true }));
+    vi.advanceTimersByTime(500);
+    controller.handleKeyUp(keyEvent({ key: 'A', ctrlKey: true }));
+    controller.handleKeyUp(keyEvent({ key: ' ' }));
+
+    expect(actions).toEqual([]);
+  });
+
+  it('does not start recording when another key is already held before a combination hotkey', () => {
+    vi.useFakeTimers();
+    const actions: string[] = [];
+    const controller = createHoldHotkeyController('Ctrl+Space', {
+      onStart: () => actions.push('start'),
+      onStop: () => actions.push('stop'),
+    });
+
+    controller.handleKeyDown(keyEvent({ key: 'A' }));
+    controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
+    controller.handleKeyDown(keyEvent({ key: ' ', ctrlKey: true }));
+    vi.advanceTimersByTime(500);
+    controller.handleKeyUp(keyEvent({ key: ' ' }));
+    controller.handleKeyUp(keyEvent({ key: 'Control' }));
+    controller.handleKeyUp(keyEvent({ key: 'A' }));
+
+    expect(actions).toEqual([]);
+  });
+
   it('supports holding a modifier-only combination hotkey', () => {
+    vi.useFakeTimers();
     const actions: string[] = [];
     const controller = createHoldHotkeyController('Ctrl+Shift', {
       onStart: () => actions.push('start'),
@@ -118,6 +177,9 @@ describe('hotkey recorder', () => {
 
     controller.handleKeyDown(keyEvent({ key: 'Control', ctrlKey: true }));
     controller.handleKeyDown(keyEvent({ key: 'Shift', ctrlKey: true, shiftKey: true }));
+    expect(actions).toEqual([]);
+
+    vi.advanceTimersByTime(500);
     controller.handleKeyUp(keyEvent({ key: 'Shift' }));
 
     expect(actions).toEqual(['start', 'stop']);

@@ -4,7 +4,7 @@ const modifierAliases: Record<string, string> = {
   Alt: 'Alt',
   Meta: 'Meta',
 };
-const standaloneModifierHoldDelayMs = 300;
+const hotkeyHoldDelayMs = 500;
 const modifierKeys = ['Ctrl', 'Alt', 'Shift', 'Meta'];
 
 export function normalizeHotkeyKey(key: string): string {
@@ -57,41 +57,20 @@ function hotkeyParts(hotkey: string): string[] {
   return toHotkeyParts(hotkey);
 }
 
-function eventMatchesHotkey(event: KeyboardEvent, hotkey: string): boolean {
-  const parts = hotkeyParts(hotkey);
-  if (!parts.length) return false;
-
-  const triggerKey = canonicalHotkeyKey(event.key);
-  const hasCtrl = parts.includes('Ctrl');
-  const hasAlt = parts.includes('Alt');
-  const hasShift = parts.includes('Shift');
-  const hasMeta = parts.includes('Meta');
-  const nonModifierParts = parts.filter((part) => !modifierKeys.includes(part));
-
-  if (Boolean(event.ctrlKey) !== hasCtrl || Boolean(event.altKey) !== hasAlt || Boolean(event.shiftKey) !== hasShift || Boolean(event.metaKey) !== hasMeta) {
-    return false;
-  }
-
-  if (!nonModifierParts.length) {
-    return formatHotkey(event) === hotkey;
-  }
-
-  return nonModifierParts.length === 1 && nonModifierParts[0] === triggerKey;
-}
-
-function eventReleasesHotkey(event: KeyboardEvent, hotkey: string): boolean {
-  const releasedKey = canonicalHotkeyKey(event.key);
-  return hotkeyParts(hotkey).includes(releasedKey);
-}
-
-function isStandaloneModifierHotkey(hotkey: string): boolean {
-  const parts = hotkeyParts(hotkey);
-  return parts.length === 1 && modifierKeys.includes(parts[0]);
-}
-
 export function createHoldHotkeyController(hotkey: string, handlers: HoldHotkeyHandlers) {
+  const requiredKeys = new Set(hotkeyParts(hotkey));
+  const pressedKeys = new Set<string>();
   let active = false;
   let pendingTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+
+  function hotkeyExactlyPressed() {
+    if (!requiredKeys.size || pressedKeys.size !== requiredKeys.size) return false;
+    return Array.from(requiredKeys).every((key) => pressedKeys.has(key));
+  }
+
+  function eventReleasesHotkey(event: KeyboardEvent) {
+    return requiredKeys.has(canonicalHotkeyKey(event.key));
+  }
 
   function clearPending() {
     if (!pendingTimer) return;
@@ -109,39 +88,44 @@ export function createHoldHotkeyController(hotkey: string, handlers: HoldHotkeyH
       return active;
     },
     handleKeyDown(event: KeyboardEvent) {
-      if (active && isStandaloneModifierHotkey(hotkey) && !eventMatchesHotkey(event, hotkey)) {
+      const key = canonicalHotkeyKey(event.key);
+      if (event.repeat && pressedKeys.has(key)) return;
+
+      pressedKeys.add(key);
+
+      if (active && !hotkeyExactlyPressed()) {
         active = false;
         handlers.onStop();
         return;
       }
 
-      if (pendingTimer && !eventMatchesHotkey(event, hotkey)) {
+      if (pendingTimer && !hotkeyExactlyPressed()) {
         clearPending();
         return;
       }
 
-      if (active || pendingTimer || event.repeat || !eventMatchesHotkey(event, hotkey)) return;
-      if (isStandaloneModifierHotkey(hotkey)) {
-        pendingTimer = globalThis.setTimeout(() => {
-          pendingTimer = null;
-          start();
-        }, standaloneModifierHoldDelayMs);
-        return;
-      }
-
-      start();
+      if (active || pendingTimer || !hotkeyExactlyPressed()) return;
+      pendingTimer = globalThis.setTimeout(() => {
+        pendingTimer = null;
+        if (!hotkeyExactlyPressed()) return;
+        start();
+      }, hotkeyHoldDelayMs);
     },
     handleKeyUp(event: KeyboardEvent) {
-      if (pendingTimer && eventReleasesHotkey(event, hotkey)) {
+      const releasesHotkey = eventReleasesHotkey(event);
+      pressedKeys.delete(canonicalHotkeyKey(event.key));
+
+      if (pendingTimer && releasesHotkey) {
         clearPending();
         return;
       }
-      if (!active || !eventReleasesHotkey(event, hotkey)) return;
+      if (!active || !releasesHotkey) return;
       active = false;
       handlers.onStop();
     },
     cancel() {
       clearPending();
+      pressedKeys.clear();
       if (!active) return;
       active = false;
       handlers.onStop();

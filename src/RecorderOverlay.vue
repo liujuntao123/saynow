@@ -7,6 +7,7 @@ const state = ref<'recording' | 'processing' | 'error'>('recording');
 const transcript = ref('');
 let unlistenState: (() => void) | undefined;
 let unlistenTranscript: (() => void) | undefined;
+let unlistenReset: (() => void) | undefined;
 
 const label = computed(() => {
   if (state.value === 'processing') return '正在识别';
@@ -26,10 +27,13 @@ onMounted(async () => {
   const currentWindow = getCurrentWindow();
   unlistenState = await currentWindow.listen<{ state: 'recording' | 'processing' | 'error' }>('recorder-state', (event) => {
     state.value = event.payload.state;
-    transcript.value = '';
   });
   unlistenTranscript = await currentWindow.listen<{ text: string; done?: boolean }>('recorder-transcript', (event) => {
     transcript.value = event.payload.text ?? '';
+  });
+  unlistenReset = await currentWindow.listen('recorder-reset', () => {
+    state.value = 'recording';
+    transcript.value = '';
   });
 });
 
@@ -38,6 +42,7 @@ onBeforeUnmount(() => {
   document.body.classList.remove('recorder-body');
   unlistenState?.();
   unlistenTranscript?.();
+  unlistenReset?.();
 });
 </script>
 

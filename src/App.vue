@@ -241,6 +241,12 @@ async function showRecorderOverlay(state: 'recording' | 'processing' | 'error') 
 async function hideRecorderOverlay() {
   if (!isTauriRuntime) return;
   await hideRecorderOverlayWindow();
+  await resetRecorderOverlay();
+}
+
+async function resetRecorderOverlay() {
+  if (!isTauriRuntime) return;
+  await emitTo('recorder', 'recorder-reset');
 }
 
 async function positionRecorderOverlay() {

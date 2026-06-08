@@ -139,6 +139,10 @@ mod platform_impl {
     const HOTKEY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
     const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(500);
+    const CLIPBOARD_OPEN_RETRIES: usize = 8;
+    const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(20);
+    const INPUT_TARGET_SETTLE_DELAY: Duration = Duration::from_millis(80);
+    const PASTE_COMPLETION_DELAY: Duration = Duration::from_millis(220);
     const SAYNOW_INPUT_MARKER: usize = 0x5A1E_2026;
     static MONITOR: OnceLock<Mutex<Option<HotkeyMonitor>>> = OnceLock::new();
     static HOOK_CONTEXT: OnceLock<Mutex<Option<HookContext>>> = OnceLock::new();
@@ -211,11 +215,15 @@ mod platform_impl {
             None
         });
         set_clipboard_text(text, true)?;
-        thread::sleep(Duration::from_millis(80));
-        let _ = restore_input_target_internal();
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(CLIPBOARD_OPEN_RETRY_DELAY);
+        let target_restored = restore_input_target_internal()?;
+        if !target_restored {
+            return Err("已写入剪贴板，但无法恢复输入目标窗口，请手动粘贴。".to_string());
+        }
+        thread::sleep(INPUT_TARGET_SETTLE_DELAY);
         let paste_result = paste_from_clipboard();
         if paste_result.is_ok() {
+            thread::sleep(PASTE_COMPLETION_DELAY);
             let restore_result = match previous_clipboard_text {
                 Some(previous_text) => set_clipboard_text(&previous_text, true),
                 None => clear_clipboard(true),
@@ -247,7 +255,7 @@ mod platform_impl {
     }
 
     pub fn restore_input_target() -> Result<(), String> {
-        restore_input_target_internal()
+        restore_input_target_internal().map(|_| ())
     }
 
     pub fn configure_no_activate_window(hwnd_value: isize) -> Result<(), String> {
@@ -809,7 +817,7 @@ mod platform_impl {
 
     fn get_clipboard_text() -> Result<Option<String>, String> {
         unsafe {
-            OpenClipboard(None).map_err(|error| format!("无法打开剪贴板：{error}"))?;
+            open_clipboard_with_retry()?;
             let _clipboard_guard = ClipboardGuard;
 
             if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
@@ -845,7 +853,7 @@ mod platform_impl {
         let byte_len = wide.len() * size_of::<u16>();
 
         unsafe {
-            OpenClipboard(None).map_err(|error| format!("无法打开剪贴板：{error}"))?;
+            open_clipboard_with_retry()?;
             let clipboard_guard = ClipboardGuard;
 
             EmptyClipboard().map_err(|error| format!("无法清空剪贴板：{error}"))?;
@@ -873,7 +881,7 @@ mod platform_impl {
 
     fn clear_clipboard(exclude_from_history: bool) -> Result<(), String> {
         unsafe {
-            OpenClipboard(None).map_err(|error| format!("无法打开剪贴板：{error}"))?;
+            open_clipboard_with_retry()?;
             let clipboard_guard = ClipboardGuard;
             EmptyClipboard().map_err(|error| format!("无法清空剪贴板：{error}"))?;
             if exclude_from_history {
@@ -884,6 +892,28 @@ mod platform_impl {
         }
 
         Ok(())
+    }
+
+    fn open_clipboard_with_retry() -> Result<(), String> {
+        let mut last_error = None;
+        for attempt in 0..=CLIPBOARD_OPEN_RETRIES {
+            match unsafe { OpenClipboard(None) } {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < CLIPBOARD_OPEN_RETRIES {
+                        thread::sleep(CLIPBOARD_OPEN_RETRY_DELAY);
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "无法打开剪贴板：{}",
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "未知错误".to_string())
+        ))
     }
 
     fn set_clipboard_history_exclusion() -> Result<(), String> {
@@ -950,15 +980,15 @@ mod platform_impl {
         }
     }
 
-    fn restore_input_target_internal() -> Result<(), String> {
+    fn restore_input_target_internal() -> Result<bool, String> {
         let Some(target_lock) = INPUT_TARGET.get() else {
-            return Ok(());
+            return Ok(true);
         };
         let Ok(current) = target_lock.lock() else {
             return Err("无法锁定输入目标窗口状态。".to_string());
         };
         let Some(target) = *current else {
-            return Ok(());
+            return Ok(true);
         };
         let hwnd = HWND(target.hwnd as *mut core::ffi::c_void);
         if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
@@ -966,12 +996,13 @@ mod platform_impl {
                 "[saynow] skipped restoring missing input target; hwnd={:?}",
                 target.hwnd
             );
-            return Ok(());
+            return Ok(false);
         }
-        if !restore_foreground_window(hwnd, target.focus_hwnd) {
+        let restored = restore_foreground_window(hwnd, target.focus_hwnd);
+        if !restored {
             eprintln!("[saynow] failed to restore input target; target={target:?}");
         }
-        Ok(())
+        Ok(restored)
     }
 
     fn restore_foreground_window(hwnd: HWND, focus_hwnd: Option<isize>) -> bool {

@@ -495,7 +495,7 @@ mod platform_impl {
                 && !hotkey_contains_key(&context.hotkey, vk_code, modifier)
             {
                 release_context_hotkey(context, "standalone modifier interrupted");
-                return owned_system_modifier;
+                return false;
             }
 
             if hotkey_matches(&context.hotkey, &context.pressed, vk_code, modifier) {
@@ -517,6 +517,9 @@ mod platform_impl {
                 return true;
             }
 
+            if standalone_modifier.is_some() {
+                return false;
+            }
             return owned_system_modifier
                 || (context.active && hotkey_contains_key(&context.hotkey, vk_code, modifier));
         }
@@ -536,6 +539,9 @@ mod platform_impl {
 
         if let Some(key) = modifier {
             context.pressed.remove(&key);
+        }
+        if standalone_modifier.is_some() {
+            return false;
         }
         owned_system_modifier || releases_active_hotkey
     }

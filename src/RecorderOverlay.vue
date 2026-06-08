@@ -99,6 +99,11 @@ onBeforeUnmount(() => {
   justify-content: center;
   z-index: 2;
   flex-shrink: 0;
+  overflow: visible;
+  transition:
+    background 0.4s ease,
+    box-shadow 0.4s ease,
+    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .orb-halo {
@@ -118,6 +123,13 @@ onBeforeUnmount(() => {
   transition: all 0.4s ease;
 }
 
+.orb-ring::after {
+  position: absolute;
+  content: '';
+  inset: 0;
+  border-radius: inherit;
+}
+
 .orb-icon-wrapper {
   position: relative;
   z-index: 10;
@@ -132,15 +144,29 @@ onBeforeUnmount(() => {
 
 .morph-hud.recording .orb-halo {
   background: linear-gradient(135deg, #0f8f83, #2dd4bf);
-  animation: orb-breathe 2s ease-in-out infinite alternate;
+  animation: orb-breathe 1.7s ease-in-out infinite alternate;
+}
+.morph-hud.recording .hud-orb {
+  background: rgba(244, 255, 253, 0.86);
+  box-shadow:
+    0 10px 28px rgba(15, 143, 131, 0.22),
+    0 0 0 0 rgba(15, 143, 131, 0.28),
+    inset 0 1px 1px rgba(255, 255, 255, 1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+  animation: orb-recording-pop 1.4s ease-in-out infinite;
 }
 .morph-hud.recording .orb-icon {
   color: #0f8f83;
+  animation: mic-listening 1.2s ease-in-out infinite;
 }
 .morph-hud.recording .orb-ring {
   opacity: 1;
   border: 1.5px solid rgba(15, 143, 131, 0.4);
-  animation: ring-ripple 1.5s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+  animation: ring-ripple 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+.morph-hud.recording .orb-ring::after {
+  border: 1px solid rgba(15, 143, 131, 0.24);
+  animation: ring-ripple 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) 0.45s infinite;
 }
 
 .morph-hud.processing .orb-halo {
@@ -258,6 +284,30 @@ onBeforeUnmount(() => {
 @keyframes orb-breathe {
   0% { transform: scale(0.9); opacity: 0.1; }
   100% { transform: scale(1.1); opacity: 0.25; }
+}
+
+@keyframes orb-recording-pop {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 10px 28px rgba(15, 143, 131, 0.22),
+      0 0 0 0 rgba(15, 143, 131, 0.28),
+      inset 0 1px 1px rgba(255, 255, 255, 1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow:
+      0 12px 32px rgba(15, 143, 131, 0.26),
+      0 0 0 8px rgba(15, 143, 131, 0),
+      inset 0 1px 1px rgba(255, 255, 255, 1),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+  }
+}
+
+@keyframes mic-listening {
+  0%, 100% { transform: translateY(0) scale(1); }
+  45% { transform: translateY(-1px) scale(1.08); }
 }
 
 @keyframes ring-ripple {

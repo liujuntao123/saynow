@@ -125,9 +125,9 @@ mod platform_impl {
             GetGUIThreadInfo, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow, PeekMessageW,
             SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, ShowWindow,
             TranslateMessage, UnhookWindowsHookEx, GUITHREADINFO, GWL_EXSTYLE, HHOOK, HWND_TOPMOST,
-            KBDLLHOOKSTRUCT, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-            SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
+            WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
         },
     };
 
@@ -157,7 +157,6 @@ mod platform_impl {
     struct HookContext {
         hotkey: HotkeySpec,
         pressed: HashSet<HotkeyKey>,
-        swallowed_keys: HashSet<HotkeyKey>,
         state: HotkeyState,
         release_miss_count: u8,
         emit_state: Box<dyn Fn(&str) + Send + Sync>,
@@ -186,34 +185,6 @@ mod platform_impl {
             match self {
                 HotkeyState::Candidate { started_at } => Some(*started_at),
                 _ => None,
-            }
-        }
-    }
-
-    struct KeyEventDecision {
-        swallow: bool,
-        release_reason: Option<&'static str>,
-    }
-
-    impl KeyEventDecision {
-        fn pass() -> Self {
-            Self {
-                swallow: false,
-                release_reason: None,
-            }
-        }
-
-        fn swallow() -> Self {
-            Self {
-                swallow: true,
-                release_reason: None,
-            }
-        }
-
-        fn release(swallow: bool, reason: &'static str) -> Self {
-            Self {
-                swallow,
-                release_reason: Some(reason),
             }
         }
     }
@@ -468,7 +439,6 @@ mod platform_impl {
             *context = Some(HookContext {
                 hotkey,
                 pressed: HashSet::new(),
-                swallowed_keys: HashSet::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state,
@@ -523,49 +493,47 @@ mod platform_impl {
             let pressed = event == WM_KEYDOWN || event == WM_SYSKEYDOWN;
             let released = event == WM_KEYUP || event == WM_SYSKEYUP;
             if pressed || released {
-                let modifier = modifier_from_vk(data.vkCode);
-                if handle_key_event(data.vkCode, modifier, pressed) {
-                    return LRESULT(1);
+                if data.flags.contains(LLKHF_INJECTED) {
+                    return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
+                let modifier = modifier_from_vk(data.vkCode);
+                handle_key_event(data.vkCode, modifier, pressed);
             }
         }
         unsafe { CallNextHookEx(None, code, wparam, lparam) }
     }
 
-    fn handle_key_event(vk_code: u32, modifier: Option<ModifierKey>, pressed: bool) -> bool {
+    fn handle_key_event(vk_code: u32, modifier: Option<ModifierKey>, pressed: bool) {
         let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
         let Ok(mut context) = context_lock.lock() else {
-            return false;
+            return;
         };
         let Some(context) = context.as_mut() else {
-            return false;
+            return;
         };
         if context.should_stop.load(Ordering::Relaxed) {
-            return false;
+            return;
         }
 
         let key = event_key(vk_code, modifier);
-        let decision = if pressed {
+        let release_reason = if pressed {
             context.release_miss_count = 0;
             handle_hotkey_key_pressed(context, key)
         } else {
             handle_hotkey_key_released(context, key)
         };
 
-        if let Some(reason) = decision.release_reason {
+        if let Some(reason) = release_reason {
             release_context_hotkey(context, reason);
         }
-
-        decision.swallow
     }
 
-    fn handle_hotkey_key_pressed(context: &mut HookContext, key: HotkeyKey) -> KeyEventDecision {
+    fn handle_hotkey_key_pressed(
+        context: &mut HookContext,
+        key: HotkeyKey,
+    ) -> Option<&'static str> {
         if context.pressed.contains(&key) {
-            return if context.swallowed_keys.contains(&key) {
-                KeyEventDecision::swallow()
-            } else {
-                KeyEventDecision::pass()
-            };
+            return None;
         }
 
         context.pressed.insert(key);
@@ -577,39 +545,36 @@ mod platform_impl {
                 context.state = HotkeyState::Candidate {
                     started_at: start_hotkey_candidate(),
                 };
-                context.swallowed_keys.insert(key);
-                return KeyEventDecision::swallow();
             }
-            return KeyEventDecision::pass();
+            return None;
         }
 
         if matches!(context.state, HotkeyState::Candidate { .. }) {
             cancel_hotkey_candidate(context);
         }
         if context.state.recording() {
-            return KeyEventDecision::release(false, "interrupted");
+            return Some("interrupted");
         }
 
-        KeyEventDecision::pass()
+        None
     }
 
-    fn handle_hotkey_key_released(context: &mut HookContext, key: HotkeyKey) -> KeyEventDecision {
+    fn handle_hotkey_key_released(
+        context: &mut HookContext,
+        key: HotkeyKey,
+    ) -> Option<&'static str> {
         context.pressed.remove(&key);
-        let swallowed = context.swallowed_keys.remove(&key);
 
         if context.hotkey.required_keys.contains(&key) {
             if matches!(context.state, HotkeyState::Candidate { .. }) {
                 cancel_hotkey_candidate(context);
             }
             if context.state.recording() {
-                return KeyEventDecision::release(swallowed, "released");
+                return Some("released");
             }
         }
 
-        KeyEventDecision {
-            swallow: swallowed,
-            release_reason: None,
-        }
+        None
     }
 
     fn event_key(vk_code: u32, modifier: Option<ModifierKey>) -> HotkeyKey {
@@ -707,7 +672,7 @@ mod platform_impl {
                 .hotkey
                 .required_keys
                 .iter()
-                .all(|key| context.swallowed_keys.contains(key) || hotkey_key_is_down(*key))
+                .all(|key| hotkey_key_is_down(*key))
     }
 
     fn all_unconfigured_modifiers_are_up(hotkey: &HotkeySpec) -> bool {
@@ -757,9 +722,6 @@ mod platform_impl {
 
     fn retain_physically_pressed_keys(context: &mut HookContext) {
         context.pressed.retain(|key| hotkey_key_is_down(*key));
-        context
-            .swallowed_keys
-            .retain(|key| context.pressed.contains(key));
         if matches!(context.state, HotkeyState::Candidate { .. })
             && !hotkey_exactly_pressed(&context.hotkey, &context.pressed)
         {
@@ -812,7 +774,6 @@ mod platform_impl {
                 cancel_hotkey_candidate(context);
                 if reason == "monitor stop requested" || reason == "hook cleanup" {
                     context.pressed.clear();
-                    context.swallowed_keys.clear();
                 }
             }
         }
@@ -1081,7 +1042,6 @@ mod platform_impl {
             HookContext {
                 hotkey,
                 pressed: HashSet::new(),
-                swallowed_keys: HashSet::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state: Box::new(|_| {}),
@@ -1110,13 +1070,25 @@ mod platform_impl {
             let mut context = context(hotkey(&["Alt"]));
 
             let down = handle_hotkey_key_pressed(&mut context, alt());
-            assert!(down.swallow);
+            assert!(down.is_none());
             assert!(matches!(context.state, HotkeyState::Candidate { .. }));
 
             let up = handle_hotkey_key_released(&mut context, alt());
-            assert!(up.swallow);
-            assert!(up.release_reason.is_none());
+            assert!(up.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
+        }
+
+        #[test]
+        fn interrupted_standalone_candidate_passes_through_and_cancels() {
+            let mut context = context(hotkey(&["Alt"]));
+            let _ = handle_hotkey_key_pressed(&mut context, alt());
+
+            let extra_down = handle_hotkey_key_pressed(&mut context, key_a());
+            let alt_up = handle_hotkey_key_released(&mut context, alt());
+
+            assert!(extra_down.is_none());
+            assert_eq!(context.state, HotkeyState::Idle);
+            assert!(alt_up.is_none());
         }
 
         #[test]
@@ -1124,11 +1096,11 @@ mod platform_impl {
             let mut context = context(hotkey(&["Ctrl", "Space"]));
 
             let ctrl_down = handle_hotkey_key_pressed(&mut context, ctrl());
-            assert!(!ctrl_down.swallow);
+            assert!(ctrl_down.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
 
             let space_down = handle_hotkey_key_pressed(&mut context, space());
-            assert!(space_down.swallow);
+            assert!(space_down.is_none());
             assert!(matches!(context.state, HotkeyState::Candidate { .. }));
         }
 
@@ -1139,9 +1111,10 @@ mod platform_impl {
             let _ = handle_hotkey_key_pressed(&mut context, space());
 
             let extra_down = handle_hotkey_key_pressed(&mut context, key_a());
+            let space_up = handle_hotkey_key_released(&mut context, space());
 
-            assert!(!extra_down.swallow);
-            assert!(extra_down.release_reason.is_none());
+            assert!(extra_down.is_none());
+            assert!(space_up.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
         }
 
@@ -1153,21 +1126,20 @@ mod platform_impl {
             let _ = handle_hotkey_key_pressed(&mut context, ctrl());
             let space_down = handle_hotkey_key_pressed(&mut context, space());
 
-            assert!(!space_down.swallow);
+            assert!(space_down.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
         }
 
         #[test]
-        fn swallowed_candidate_key_still_counts_as_held() {
+        fn candidate_keeps_exact_pressed_hotkey_state() {
             let mut context = context(hotkey(&["Alt"]));
             let _ = handle_hotkey_key_pressed(&mut context, alt());
 
-            assert!(context.swallowed_keys.contains(&alt()));
-            assert!(tracked_hotkey_is_down(&context));
+            assert!(hotkey_exactly_pressed(&context.hotkey, &context.pressed));
         }
 
         #[test]
-        fn recording_releases_on_required_key_up_and_swallows_paired_up() {
+        fn recording_releases_on_required_key_up() {
             let mut context = context(hotkey(&["Ctrl", "Space"]));
             let _ = handle_hotkey_key_pressed(&mut context, ctrl());
             let _ = handle_hotkey_key_pressed(&mut context, space());
@@ -1175,25 +1147,24 @@ mod platform_impl {
 
             let space_up = handle_hotkey_key_released(&mut context, space());
 
-            assert!(space_up.swallow);
-            assert_eq!(space_up.release_reason, Some("released"));
+            assert_eq!(space_up, Some("released"));
         }
 
         #[test]
-        fn recording_keeps_swallowed_trigger_until_its_key_up() {
+        fn recording_releases_once_even_when_another_required_key_follows() {
             let mut context = context(hotkey(&["Ctrl", "Space"]));
             let _ = handle_hotkey_key_pressed(&mut context, ctrl());
             let _ = handle_hotkey_key_pressed(&mut context, space());
             context.state = HotkeyState::Recording;
 
             let ctrl_up = handle_hotkey_key_released(&mut context, ctrl());
-            if let Some(reason) = ctrl_up.release_reason {
+            if let Some(reason) = ctrl_up {
                 release_context_hotkey(&mut context, reason);
             }
             let space_up = handle_hotkey_key_released(&mut context, space());
 
-            assert!(!ctrl_up.swallow);
-            assert!(space_up.swallow);
+            assert_eq!(ctrl_up, Some("released"));
+            assert!(space_up.is_none());
         }
     }
 }

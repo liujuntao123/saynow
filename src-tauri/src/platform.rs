@@ -2,7 +2,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModifierHotkeyEvent {
+pub struct HotkeyStateEvent {
     pub state: String,
 }
 
@@ -131,7 +131,7 @@ mod platform_impl {
         },
     };
 
-    use crate::platform::ModifierHotkeyEvent;
+    use crate::platform::HotkeyStateEvent;
 
     const CF_UNICODETEXT: u32 = 13;
     const KEY_DOWN_MASK: i16 = i16::MIN;
@@ -139,7 +139,8 @@ mod platform_impl {
     const HOTKEY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
     const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(500);
-    static MONITOR: OnceLock<Mutex<Option<ModifierHotkeyMonitor>>> = OnceLock::new();
+    const SAYNOW_INPUT_MARKER: usize = 0x5A1E_2026;
+    static MONITOR: OnceLock<Mutex<Option<HotkeyMonitor>>> = OnceLock::new();
     static HOOK_CONTEXT: OnceLock<Mutex<Option<HookContext>>> = OnceLock::new();
     static INPUT_TARGET: OnceLock<Mutex<Option<InputTarget>>> = OnceLock::new();
 
@@ -149,7 +150,7 @@ mod platform_impl {
         focus_hwnd: Option<isize>,
     }
 
-    struct ModifierHotkeyMonitor {
+    struct HotkeyMonitor {
         stop: mpsc::Sender<()>,
         thread: thread::JoinHandle<()>,
     }
@@ -328,7 +329,7 @@ mod platform_impl {
         eprintln!("[saynow] starting native hotkey monitor; parts={parts:?}");
         let (stop_tx, stop_rx) = mpsc::channel();
         let thread = thread::spawn(move || run_hotkey_hook(app, hotkey, stop_rx));
-        *monitor = Some(ModifierHotkeyMonitor {
+        *monitor = Some(HotkeyMonitor {
             stop: stop_tx,
             thread,
         });
@@ -430,7 +431,7 @@ mod platform_impl {
         stop_rx: &mpsc::Receiver<()>,
     ) -> Result<(), String> {
         let emit_app = app.clone();
-        let emit_state = Box::new(move |state: &str| emit_modifier_state(&emit_app, state));
+        let emit_state = Box::new(move |state: &str| emit_hotkey_state(&emit_app, state));
         {
             let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
             let mut context = context_lock
@@ -493,7 +494,7 @@ mod platform_impl {
             let pressed = event == WM_KEYDOWN || event == WM_SYSKEYDOWN;
             let released = event == WM_KEYUP || event == WM_SYSKEYUP;
             if pressed || released {
-                if data.flags.contains(LLKHF_INJECTED) {
+                if data.flags.contains(LLKHF_INJECTED) && data.dwExtraInfo == SAYNOW_INPUT_MARKER {
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
                 let modifier = modifier_from_vk(data.vkCode);
@@ -744,11 +745,11 @@ mod platform_impl {
         }
     }
 
-    fn emit_modifier_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &str) {
+    fn emit_hotkey_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>, state: &str) {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.emit(
-                "modifier-hotkey-state",
-                ModifierHotkeyEvent {
+                "hotkey-state",
+                HotkeyStateEvent {
                     state: state.to_string(),
                 },
             );
@@ -1008,7 +1009,7 @@ mod platform_impl {
                         Default::default()
                     },
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: SAYNOW_INPUT_MARKER,
                 },
             },
         }

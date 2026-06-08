@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { currentMonitor, cursorPosition, monitorFromPoint, primaryMonitor, type Monitor } from '@tauri-apps/api/window';
 import AppShell from './components/AppShell.vue';
@@ -29,7 +29,7 @@ import {
   updateStylePrompt,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
-import { createHoldHotkeyController, toHotkeyParts } from './domain/hotkeyRecorder';
+import { toHotkeyParts } from './domain/hotkeyRecorder';
 import { calculateRecorderOverlayPosition } from './domain/recorderOverlayPosition';
 import ConfigPage from './pages/ConfigPage.vue';
 import DataPage from './pages/DataPage.vue';
@@ -58,18 +58,17 @@ const busy = ref(false);
 const saving = ref(false);
 const hotkeyRecording = ref(false);
 const configuringHotkey = ref(false);
-const holdHotkeyController = shallowRef<ReturnType<typeof createHoldHotkeyController> | null>(null);
 const audioRecorder = createAudioRecorder();
 let recordingStartPromise: Promise<void> | null = null;
-let unlistenModifierHotkey: (() => void) | null = null;
+let unlistenHotkeyState: (() => void) | null = null;
 let recordingGuardTimer: ReturnType<typeof window.setTimeout> | null = null;
 let hotkeyMonitorRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
-let modifierHotkeyListenRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
+let hotkeyStateListenRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
 let mounted = false;
 const RECORDER_OVERLAY_SIZE = { width: 760, height: 52 };
 const MAX_HOTKEY_RECORDING_MS = 120_000;
 const HOTKEY_MONITOR_RETRY_MS = 1500;
-const MODIFIER_EVENT_LISTEN_RETRY_MS = 1500;
+const HOTKEY_STATE_LISTEN_RETRY_MS = 1500;
 
 const currentPage = computed(() => activePage.value);
 const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
@@ -121,23 +120,6 @@ async function stopHotkeyRecording(reason = 'hotkey released') {
 async function releaseHotkeyRecording() {
   await restoreInputTarget().catch((error) => console.error('[saynow] failed to restore input target', error));
   await stopHotkeyRecording();
-}
-
-function handleRuntimeKeyDown(event: KeyboardEvent) {
-  if (isTauriRuntime) return;
-  if (!runtimeHotkeyEnabled.value) return;
-  holdHotkeyController.value?.handleKeyDown(event);
-}
-
-function handleRuntimeKeyUp(event: KeyboardEvent) {
-  if (isTauriRuntime) return;
-  if (!runtimeHotkeyEnabled.value) return;
-  holdHotkeyController.value?.handleKeyUp(event);
-}
-
-function handleRuntimeReset() {
-  if (isTauriRuntime) return;
-  holdHotkeyController.value?.cancel();
 }
 
 function armRecordingGuard() {
@@ -322,37 +304,37 @@ async function resetNativeHotkeyMonitor(reason: string) {
   await registerRuntimeHotkey(config.value.hotkey);
 }
 
-function subscribeModifierHotkeyEvents() {
+function subscribeHotkeyStateEvents() {
   if (!isTauriRuntime || !mounted) return;
-  clearModifierHotkeyListenRetry();
-  void listen<{ state: 'Pressed' | 'Released' }>('modifier-hotkey-state', (event) => {
-    debugLog('modifier hotkey event', event.payload);
+  clearHotkeyStateListenRetry();
+  void listen<{ state: 'Pressed' | 'Released' }>('hotkey-state', (event) => {
+    debugLog('hotkey state event', event.payload);
     if (event.payload.state === 'Pressed') startHotkeyRecording();
     if (event.payload.state === 'Released') {
       void releaseHotkeyRecording();
     }
   })
     .then((unlisten) => {
-      unlistenModifierHotkey = unlisten;
+      unlistenHotkeyState = unlisten;
     })
     .catch((error) => {
-      console.error('[saynow] failed to listen modifier hotkey state', error);
-      scheduleModifierHotkeyListenRetry();
+      console.error('[saynow] failed to listen hotkey state', error);
+      scheduleHotkeyStateListenRetry();
     });
 }
 
-function scheduleModifierHotkeyListenRetry() {
-  if (!mounted || modifierHotkeyListenRetryTimer) return;
-  modifierHotkeyListenRetryTimer = window.setTimeout(() => {
-    modifierHotkeyListenRetryTimer = null;
-    subscribeModifierHotkeyEvents();
-  }, MODIFIER_EVENT_LISTEN_RETRY_MS);
+function scheduleHotkeyStateListenRetry() {
+  if (!mounted || hotkeyStateListenRetryTimer) return;
+  hotkeyStateListenRetryTimer = window.setTimeout(() => {
+    hotkeyStateListenRetryTimer = null;
+    subscribeHotkeyStateEvents();
+  }, HOTKEY_STATE_LISTEN_RETRY_MS);
 }
 
-function clearModifierHotkeyListenRetry() {
-  if (!modifierHotkeyListenRetryTimer) return;
-  window.clearTimeout(modifierHotkeyListenRetryTimer);
-  modifierHotkeyListenRetryTimer = null;
+function clearHotkeyStateListenRetry() {
+  if (!hotkeyStateListenRetryTimer) return;
+  window.clearTimeout(hotkeyStateListenRetryTimer);
+  hotkeyStateListenRetryTimer = null;
 }
 
 async function createVocabularyTerms(terms: string[]) {
@@ -388,21 +370,12 @@ async function savePersonalizationPreferenceSettings(preferences: Personalizatio
 watch(
   () => config.value?.hotkey,
   (hotkey) => {
-    holdHotkeyController.value = hotkey
-      ? createHoldHotkeyController(hotkey, {
-          onStart: startHotkeyRecording,
-          onStop: () => {
-            void stopHotkeyRecording();
-          },
-        })
-      : null;
     void registerRuntimeHotkey(hotkey);
   },
 );
 
 watch(configuringHotkey, (recording) => {
   if (recording) {
-    handleRuntimeReset();
     void registerRuntimeHotkey(undefined);
   } else {
     void registerRuntimeHotkey(config.value?.hotkey);
@@ -411,11 +384,7 @@ watch(configuringHotkey, (recording) => {
 
 onMounted(() => {
   mounted = true;
-  window.addEventListener('keydown', handleRuntimeKeyDown, true);
-  window.addEventListener('keyup', handleRuntimeKeyUp, true);
-  window.addEventListener('blur', handleRuntimeReset);
-  document.addEventListener('visibilitychange', handleRuntimeReset);
-  subscribeModifierHotkeyEvents();
+  subscribeHotkeyStateEvents();
   void refreshAll()
     .then(() => registerRuntimeHotkey(config.value?.hotkey))
     .catch((error) => console.error('[saynow] failed to initialize app runtime', error));
@@ -423,15 +392,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   mounted = false;
-  window.removeEventListener('keydown', handleRuntimeKeyDown, true);
-  window.removeEventListener('keyup', handleRuntimeKeyUp, true);
-  window.removeEventListener('blur', handleRuntimeReset);
-  document.removeEventListener('visibilitychange', handleRuntimeReset);
   clearRecordingGuard();
   clearHotkeyMonitorRetry();
-  clearModifierHotkeyListenRetry();
-  handleRuntimeReset();
-  unlistenModifierHotkey?.();
+  clearHotkeyStateListenRetry();
+  unlistenHotkeyState?.();
   void setHotkeyMonitor(null).catch(() => undefined);
 });
 </script>

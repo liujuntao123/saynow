@@ -4,7 +4,6 @@ const modifierAliases: Record<string, string> = {
   Alt: 'Alt',
   Meta: 'Meta',
 };
-const hotkeyHoldDelayMs = 500;
 const modifierKeys = ['Ctrl', 'Alt', 'Shift', 'Meta'];
 
 export function normalizeHotkeyKey(key: string): string {
@@ -41,11 +40,6 @@ export function isModifierOnlyHotkey(hotkey: string): boolean {
   return parts.length > 0 && parts.every((part) => modifierKeys.includes(part));
 }
 
-export interface HoldHotkeyHandlers {
-  onStart: () => void;
-  onStop: () => void;
-}
-
 export function toHotkeyParts(hotkey: string): string[] {
   return hotkey
     .split('+')
@@ -55,80 +49,4 @@ export function toHotkeyParts(hotkey: string): string[] {
 
 function hotkeyParts(hotkey: string): string[] {
   return toHotkeyParts(hotkey);
-}
-
-export function createHoldHotkeyController(hotkey: string, handlers: HoldHotkeyHandlers) {
-  const requiredKeys = new Set(hotkeyParts(hotkey));
-  const pressedKeys = new Set<string>();
-  let active = false;
-  let pendingTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
-
-  function hotkeyExactlyPressed() {
-    if (!requiredKeys.size || pressedKeys.size !== requiredKeys.size) return false;
-    return Array.from(requiredKeys).every((key) => pressedKeys.has(key));
-  }
-
-  function eventReleasesHotkey(event: KeyboardEvent) {
-    return requiredKeys.has(canonicalHotkeyKey(event.key));
-  }
-
-  function clearPending() {
-    if (!pendingTimer) return;
-    globalThis.clearTimeout(pendingTimer);
-    pendingTimer = null;
-  }
-
-  function start() {
-    active = true;
-    handlers.onStart();
-  }
-
-  return {
-    get active() {
-      return active;
-    },
-    handleKeyDown(event: KeyboardEvent) {
-      const key = canonicalHotkeyKey(event.key);
-      if (event.repeat && pressedKeys.has(key)) return;
-
-      pressedKeys.add(key);
-
-      if (active && !hotkeyExactlyPressed()) {
-        active = false;
-        handlers.onStop();
-        return;
-      }
-
-      if (pendingTimer && !hotkeyExactlyPressed()) {
-        clearPending();
-        return;
-      }
-
-      if (active || pendingTimer || !hotkeyExactlyPressed()) return;
-      pendingTimer = globalThis.setTimeout(() => {
-        pendingTimer = null;
-        if (!hotkeyExactlyPressed()) return;
-        start();
-      }, hotkeyHoldDelayMs);
-    },
-    handleKeyUp(event: KeyboardEvent) {
-      const releasesHotkey = eventReleasesHotkey(event);
-      pressedKeys.delete(canonicalHotkeyKey(event.key));
-
-      if (pendingTimer && releasesHotkey) {
-        clearPending();
-        return;
-      }
-      if (!active || !releasesHotkey) return;
-      active = false;
-      handlers.onStop();
-    },
-    cancel() {
-      clearPending();
-      pressedKeys.clear();
-      if (!active) return;
-      active = false;
-      handlers.onStop();
-    },
-  };
 }

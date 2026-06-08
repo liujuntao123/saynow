@@ -27,7 +27,7 @@ const providerForm = reactive<ProviderConfig>({
 const selectedProviderId = ref<number | null>(null);
 const hotkey = ref('Alt');
 const recordingHotkey = ref(false);
-const pendingModifierHotkey = ref<string | null>(null);
+const pendingModifierOnlyHotkey = ref<string | null>(null);
 let hotkeyCaptureTimer: ReturnType<typeof window.setTimeout> | null = null;
 const HOTKEY_CAPTURE_TIMEOUT_MS = 15_000;
 
@@ -80,13 +80,13 @@ function recordHotkey(event: KeyboardEvent) {
   if (event.key === 'Escape') { stopHotkeyCapture(); return; }
   const nextHotkey = formatHotkey(event);
   if (!nextHotkey) return;
-  if (isModifierOnlyHotkey(nextHotkey)) { pendingModifierHotkey.value = nextHotkey; return; }
-  hotkey.value = nextHotkey; pendingModifierHotkey.value = null; stopHotkeyCapture();
+  if (isModifierOnlyHotkey(nextHotkey)) { pendingModifierOnlyHotkey.value = nextHotkey; return; }
+  hotkey.value = nextHotkey; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
 }
-function finishModifierHotkey(event: KeyboardEvent) {
-  if (!recordingHotkey.value || !pendingModifierHotkey.value) return;
+function finishModifierOnlyHotkey(event: KeyboardEvent) {
+  if (!recordingHotkey.value || !pendingModifierOnlyHotkey.value) return;
   event.preventDefault(); event.stopPropagation();
-  hotkey.value = pendingModifierHotkey.value; pendingModifierHotkey.value = null; stopHotkeyCapture();
+  hotkey.value = pendingModifierOnlyHotkey.value; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
 }
 function startHotkeyCapture() {
   recordingHotkey.value = true;
@@ -112,17 +112,17 @@ watch(recordingHotkey, (recording) => {
   if (recording) {
     armHotkeyCaptureTimer();
     window.addEventListener('keydown', recordHotkey, true);
-    window.addEventListener('keyup', finishModifierHotkey, true);
+    window.addEventListener('keyup', finishModifierOnlyHotkey, true);
     window.addEventListener('blur', handleCaptureReset);
     document.addEventListener('visibilitychange', handleCaptureReset);
   }
   else {
     clearHotkeyCaptureTimer();
     window.removeEventListener('keydown', recordHotkey, true);
-    window.removeEventListener('keyup', finishModifierHotkey, true);
+    window.removeEventListener('keyup', finishModifierOnlyHotkey, true);
     window.removeEventListener('blur', handleCaptureReset);
     document.removeEventListener('visibilitychange', handleCaptureReset);
-    pendingModifierHotkey.value = null;
+    pendingModifierOnlyHotkey.value = null;
   }
 }, { flush: 'sync' });
 
@@ -130,7 +130,7 @@ onBeforeUnmount(() => {
   stopHotkeyCapture();
   clearHotkeyCaptureTimer();
   window.removeEventListener('keydown', recordHotkey, true);
-  window.removeEventListener('keyup', finishModifierHotkey, true);
+  window.removeEventListener('keyup', finishModifierOnlyHotkey, true);
   window.removeEventListener('blur', handleCaptureReset);
   document.removeEventListener('visibilitychange', handleCaptureReset);
   emit('hotkeyRecordingChange', false);

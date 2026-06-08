@@ -41,6 +41,10 @@ pub fn remember_input_target() -> Result<(), String> {
     platform_impl::remember_input_target()
 }
 
+pub fn restore_input_target() -> Result<(), String> {
+    platform_impl::restore_input_target()
+}
+
 #[cfg(all(feature = "desktop", target_os = "windows"))]
 pub fn configure_no_activate_window(hwnd: isize) -> Result<(), String> {
     platform_impl::configure_no_activate_window(hwnd)
@@ -112,15 +116,15 @@ mod platform_impl {
             Threading::{AttachThreadInput, GetCurrentThreadId},
         },
         UI::Input::KeyboardAndMouse::{
-            GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+            GetAsyncKeyState, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
             KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
             VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_V,
         },
         UI::WindowsAndMessaging::{
             BringWindowToTop, CallNextHookEx, DispatchMessageW, GetForegroundWindow,
-            GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow, PeekMessageW,
+            GetGUIThreadInfo, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow, PeekMessageW,
             SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, ShowWindow,
-            TranslateMessage, UnhookWindowsHookEx, GWL_EXSTYLE, HHOOK, HWND_TOPMOST,
+            TranslateMessage, UnhookWindowsHookEx, GUITHREADINFO, GWL_EXSTYLE, HHOOK, HWND_TOPMOST,
             KBDLLHOOKSTRUCT, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
             SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
             WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -137,7 +141,13 @@ mod platform_impl {
     const STANDALONE_MODIFIER_HOLD_DELAY: Duration = Duration::from_millis(300);
     static MONITOR: OnceLock<Mutex<Option<ModifierHotkeyMonitor>>> = OnceLock::new();
     static HOOK_CONTEXT: OnceLock<Mutex<Option<HookContext>>> = OnceLock::new();
-    static INPUT_TARGET: OnceLock<Mutex<Option<isize>>> = OnceLock::new();
+    static INPUT_TARGET: OnceLock<Mutex<Option<InputTarget>>> = OnceLock::new();
+
+    #[derive(Debug, Clone, Copy)]
+    struct InputTarget {
+        hwnd: isize,
+        focus_hwnd: Option<isize>,
+    }
 
     struct ModifierHotkeyMonitor {
         stop: mpsc::Sender<()>,
@@ -181,7 +191,7 @@ mod platform_impl {
         });
         set_clipboard_text(text, true)?;
         thread::sleep(Duration::from_millis(80));
-        restore_input_target();
+        let _ = restore_input_target_internal();
         thread::sleep(Duration::from_millis(40));
         let paste_result = paste_from_clipboard();
         if paste_result.is_ok() {
@@ -201,15 +211,22 @@ mod platform_impl {
         let target = if hwnd.0.is_null() {
             None
         } else {
-            Some(hwnd.0 as isize)
+            Some(InputTarget {
+                hwnd: hwnd.0 as isize,
+                focus_hwnd: focused_child_window(hwnd).map(|focus| focus.0 as isize),
+            })
         };
         let target_lock = INPUT_TARGET.get_or_init(|| Mutex::new(None));
         let mut current = target_lock
             .lock()
             .map_err(|_| "无法锁定输入目标窗口状态。".to_string())?;
         *current = target;
-        eprintln!("[saynow] remembered input target; hwnd={target:?}");
+        eprintln!("[saynow] remembered input target; target={target:?}");
         Ok(())
+    }
+
+    pub fn restore_input_target() -> Result<(), String> {
+        restore_input_target_internal()
     }
 
     pub fn configure_no_activate_window(hwnd_value: isize) -> Result<(), String> {
@@ -502,6 +519,7 @@ mod platform_impl {
                 if !context.active {
                     if standalone_modifier == modifier {
                         if context.pending_modifier.is_none() {
+                            let _ = remember_input_target();
                             context.pending_modifier = modifier.map(|key| PendingModifierHotkey {
                                 key,
                                 started_at: Instant::now(),
@@ -610,7 +628,6 @@ mod platform_impl {
         context.pending_modifier = None;
         context.active = true;
         context.release_miss_count = 0;
-        let _ = remember_input_target();
         eprintln!("[saynow] native standalone modifier hotkey pressed after hold");
         (context.emit_state)("Pressed");
     }
@@ -892,27 +909,51 @@ mod platform_impl {
         }
     }
 
-    fn restore_input_target() {
-        let Some(target_lock) = INPUT_TARGET.get() else {
-            return;
-        };
-        let Ok(current) = target_lock.lock() else {
-            return;
-        };
-        let Some(hwnd_value) = *current else {
-            return;
-        };
-        let hwnd = HWND(hwnd_value as *mut core::ffi::c_void);
-        if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
-            eprintln!("[saynow] skipped restoring missing input target; hwnd={hwnd_value:?}");
-            return;
+    fn focused_child_window(hwnd: HWND) -> Option<HWND> {
+        let target_thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
+        if target_thread == 0 {
+            return None;
         }
-        if !restore_foreground_window(hwnd) {
-            eprintln!("[saynow] failed to restore input target; hwnd={hwnd_value:?}");
+
+        let mut gui = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetGUIThreadInfo(target_thread, &mut gui).is_ok() }
+            && !gui.hwndFocus.0.is_null()
+            && unsafe { IsWindow(Some(gui.hwndFocus)).as_bool() }
+        {
+            Some(gui.hwndFocus)
+        } else {
+            None
         }
     }
 
-    fn restore_foreground_window(hwnd: HWND) -> bool {
+    fn restore_input_target_internal() -> Result<(), String> {
+        let Some(target_lock) = INPUT_TARGET.get() else {
+            return Ok(());
+        };
+        let Ok(current) = target_lock.lock() else {
+            return Err("无法锁定输入目标窗口状态。".to_string());
+        };
+        let Some(target) = *current else {
+            return Ok(());
+        };
+        let hwnd = HWND(target.hwnd as *mut core::ffi::c_void);
+        if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            eprintln!(
+                "[saynow] skipped restoring missing input target; hwnd={:?}",
+                target.hwnd
+            );
+            return Ok(());
+        }
+        if !restore_foreground_window(hwnd, target.focus_hwnd) {
+            eprintln!("[saynow] failed to restore input target; target={target:?}");
+        }
+        Ok(())
+    }
+
+    fn restore_foreground_window(hwnd: HWND, focus_hwnd: Option<isize>) -> bool {
         unsafe {
             let current_thread = GetCurrentThreadId();
             let target_thread = GetWindowThreadProcessId(hwnd, None);
@@ -921,6 +962,12 @@ mod platform_impl {
                 && AttachThreadInput(current_thread, target_thread, true).as_bool();
             let _ = BringWindowToTop(hwnd);
             let restored = SetForegroundWindow(hwnd).as_bool();
+            if let Some(focus_hwnd_value) = focus_hwnd {
+                let focus = HWND(focus_hwnd_value as *mut core::ffi::c_void);
+                if IsWindow(Some(focus)).as_bool() {
+                    let _ = SetFocus(Some(focus));
+                }
+            }
             if attached {
                 let _ = AttachThreadInput(current_thread, target_thread, false);
             }
@@ -982,6 +1029,10 @@ mod platform_impl {
     }
 
     pub fn remember_input_target() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn restore_input_target() -> Result<(), String> {
         Ok(())
     }
 }

@@ -16,6 +16,7 @@ import {
   listStylePrompts,
   listVocabulary,
   recognizeAudio,
+  restoreInputTarget,
   saveConfig,
   saveProviderConfig,
   deleteProviderConfig,
@@ -115,6 +116,11 @@ async function stopHotkeyRecording(reason = 'hotkey released') {
   hotkeyRecording.value = false;
   clearRecordingGuard();
   await finishRecording();
+}
+
+async function releaseHotkeyRecording() {
+  await restoreInputTarget().catch((error) => console.error('[saynow] failed to restore input target', error));
+  await stopHotkeyRecording();
 }
 
 function handleRuntimeKeyDown(event: KeyboardEvent) {
@@ -323,7 +329,7 @@ function subscribeModifierHotkeyEvents() {
     debugLog('modifier hotkey event', event.payload);
     if (event.payload.state === 'Pressed') startHotkeyRecording();
     if (event.payload.state === 'Released') {
-      void stopHotkeyRecording();
+      void releaseHotkeyRecording();
     }
   })
     .then((unlisten) => {

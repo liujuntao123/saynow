@@ -222,3 +222,7 @@ export async function setRecorderOverlayPosition(x: number, y: number): Promise<
 export async function setHotkeyMonitor(parts: string[] | null): Promise<void> {
   if (isTauri) return invoke('set_hotkey_monitor', { parts });
 }
+
+export async function restoreInputTarget(): Promise<void> {
+  if (isTauri) return invoke('restore_input_target');
+}

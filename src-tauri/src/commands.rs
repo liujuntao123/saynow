@@ -614,6 +614,11 @@ mod tauri_commands {
         crate::platform::set_hotkey_monitor(app, parts)
     }
 
+    #[tauri::command]
+    pub fn restore_input_target() -> Result<(), String> {
+        crate::platform::restore_input_target()
+    }
+
     pub fn handlers<R: tauri::Runtime>(
     ) -> Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static> {
         Box::new(tauri::generate_handler![
@@ -639,7 +644,8 @@ mod tauri_commands {
             show_recorder_overlay_no_activate,
             hide_recorder_overlay,
             set_recorder_overlay_position,
-            set_hotkey_monitor
+            set_hotkey_monitor,
+            restore_input_target
         ])
     }
 }

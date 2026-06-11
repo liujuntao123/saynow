@@ -50,3 +50,36 @@ export function toHotkeyParts(hotkey: string): string[] {
 function hotkeyParts(hotkey: string): string[] {
   return toHotkeyParts(hotkey);
 }
+
+export function isEventPartOfHotkey(event: KeyboardEvent, hotkey?: string): boolean {
+  const parts = toHotkeyParts(hotkey ?? '');
+  if (!parts.length) return false;
+
+  const key = canonicalHotkeyKey(event.key);
+  if (!parts.includes(key)) return false;
+
+  const requiredModifiers = new Set(parts.filter((part) => modifierKeys.includes(part)));
+  const activeModifiers = new Set(
+    [
+      event.ctrlKey ? 'Ctrl' : '',
+      event.altKey ? 'Alt' : '',
+      event.shiftKey ? 'Shift' : '',
+      event.metaKey ? 'Meta' : '',
+      event.key in modifierAliases ? key : '',
+    ].filter(Boolean),
+  );
+
+  for (const modifier of activeModifiers) {
+    if (!requiredModifiers.has(modifier)) return false;
+  }
+
+  if (modifierKeys.includes(key)) {
+    return true;
+  }
+
+  for (const modifier of requiredModifiers) {
+    if (!activeModifiers.has(modifier)) return false;
+  }
+
+  return true;
+}

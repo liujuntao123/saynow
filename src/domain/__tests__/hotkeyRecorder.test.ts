@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatHotkey, isModifierOnlyHotkey, toHotkeyParts } from '../hotkeyRecorder';
+import { formatHotkey, isEventPartOfHotkey, isModifierOnlyHotkey, toHotkeyParts } from '../hotkeyRecorder';
 
 function keyEvent(input: Partial<KeyboardEvent>): KeyboardEvent {
   return input as KeyboardEvent;
@@ -30,5 +30,13 @@ describe('hotkey recorder', () => {
   it('extracts native hotkey parts', () => {
     expect(toHotkeyParts('Ctrl+Space')).toEqual(['Ctrl', 'Space']);
     expect(toHotkeyParts('Alt+Shift+K')).toEqual(['Alt', 'Shift', 'K']);
+  });
+
+  it('detects DOM events that belong to the configured hotkey', () => {
+    expect(isEventPartOfHotkey(keyEvent({ key: 'Alt', altKey: true }), 'Alt')).toBe(true);
+    expect(isEventPartOfHotkey(keyEvent({ key: ' ', ctrlKey: true }), 'Ctrl+Space')).toBe(true);
+    expect(isEventPartOfHotkey(keyEvent({ key: 'Control', ctrlKey: true }), 'Ctrl+Space')).toBe(true);
+    expect(isEventPartOfHotkey(keyEvent({ key: ' ', altKey: true }), 'Ctrl+Space')).toBe(false);
+    expect(isEventPartOfHotkey(keyEvent({ key: 'k', ctrlKey: true, shiftKey: true }), 'Ctrl+K')).toBe(false);
   });
 });

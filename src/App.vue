@@ -29,7 +29,7 @@ import {
   updateStylePrompt,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
-import { toHotkeyParts } from './domain/hotkeyRecorder';
+import { isEventPartOfHotkey, toHotkeyParts } from './domain/hotkeyRecorder';
 import { calculateRecorderOverlayPosition } from './domain/recorderOverlayPosition';
 import ConfigPage from './pages/ConfigPage.vue';
 import DataPage from './pages/DataPage.vue';
@@ -343,6 +343,12 @@ function clearHotkeyStateListenRetry() {
   hotkeyStateListenRetryTimer = null;
 }
 
+function suppressRuntimeHotkeyDomEvent(event: KeyboardEvent) {
+  if (!runtimeHotkeyEnabled.value || !isEventPartOfHotkey(event, config.value?.hotkey)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
 async function createVocabularyTerms(terms: string[]) {
   vocabulary.value = await addVocabularyTerms(terms);
   await refreshAll();
@@ -390,6 +396,8 @@ watch(configuringHotkey, (recording) => {
 
 onMounted(() => {
   mounted = true;
+  window.addEventListener('keydown', suppressRuntimeHotkeyDomEvent, true);
+  window.addEventListener('keyup', suppressRuntimeHotkeyDomEvent, true);
   subscribeHotkeyStateEvents();
   void refreshAll()
     .then(() => registerRuntimeHotkey(config.value?.hotkey))
@@ -401,6 +409,8 @@ onBeforeUnmount(() => {
   clearRecordingGuard();
   clearHotkeyMonitorRetry();
   clearHotkeyStateListenRetry();
+  window.removeEventListener('keydown', suppressRuntimeHotkeyDomEvent, true);
+  window.removeEventListener('keyup', suppressRuntimeHotkeyDomEvent, true);
   unlistenHotkeyState?.();
   void setHotkeyMonitor(null).catch(() => undefined);
 });

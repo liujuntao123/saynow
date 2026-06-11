@@ -166,6 +166,7 @@ mod platform_impl {
         hotkey: HotkeySpec,
         pressed: HashSet<HotkeyKey>,
         captured_keys: HashSet<HotkeyKey>,
+        captured_order: Vec<HotkeyKey>,
         state: HotkeyState,
         release_miss_count: u8,
         emit_state: Box<dyn Fn(&str) + Send + Sync>,
@@ -458,6 +459,7 @@ mod platform_impl {
                 hotkey,
                 pressed: HashSet::new(),
                 captured_keys: HashSet::new(),
+                captured_order: Vec::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state,
@@ -537,6 +539,7 @@ mod platform_impl {
         }
 
         let key = event_key(vk_code, modifier);
+        let should_replay_capture = should_replay_captured_prefix(context, key, pressed);
         let should_capture = should_capture_event(context, key, pressed);
         let release_reason = if pressed {
             context.release_miss_count = 0;
@@ -553,12 +556,12 @@ mod platform_impl {
             release_context_hotkey(context, reason);
         }
 
+        if should_replay_capture {
+            replay_captured_key_downs(context);
+        }
+
         if should_capture {
-            if pressed {
-                context.captured_keys.insert(key);
-            } else {
-                context.captured_keys.remove(&key);
-            }
+            track_captured_event(context, key, pressed);
         }
 
         should_capture
@@ -791,6 +794,38 @@ mod platform_impl {
         context.pressed.clear();
     }
 
+    fn should_replay_captured_prefix(context: &HookContext, key: HotkeyKey, pressed: bool) -> bool {
+        pressed
+            && context.hotkey.capture_events
+            && !context.state.recording()
+            && !context.captured_order.is_empty()
+            && !context.hotkey.required_keys.contains(&key)
+    }
+
+    fn replay_captured_key_downs(context: &mut HookContext) {
+        let captured = context.captured_order.clone();
+        context.captured_keys.clear();
+        context.captured_order.clear();
+
+        for key in captured {
+            if let Err(error) = send_hotkey_key_down(key) {
+                eprintln!("[saynow] failed to replay captured hotkey prefix: {error}");
+                break;
+            }
+        }
+    }
+
+    fn track_captured_event(context: &mut HookContext, key: HotkeyKey, pressed: bool) {
+        if pressed {
+            if context.captured_keys.insert(key) {
+                context.captured_order.push(key);
+            }
+        } else {
+            context.captured_keys.remove(&key);
+            context.captured_order.retain(|captured| *captured != key);
+        }
+    }
+
     fn should_capture_event(context: &HookContext, key: HotkeyKey, pressed: bool) -> bool {
         if !context.hotkey.capture_events || !context.hotkey.required_keys.contains(&key) {
             return false;
@@ -852,6 +887,7 @@ mod platform_impl {
                 if reason == "monitor stop requested" || reason == "hook cleanup" {
                     context.pressed.clear();
                     context.captured_keys.clear();
+                    context.captured_order.clear();
                 }
             }
         }
@@ -1130,6 +1166,17 @@ mod platform_impl {
         send_keyboard_input(keyboard_input(key, false), "按下")
     }
 
+    fn send_hotkey_key_down(key: HotkeyKey) -> Result<(), String> {
+        let virtual_key = match key {
+            HotkeyKey::Modifier(ModifierKey::Ctrl) => VK_CONTROL,
+            HotkeyKey::Modifier(ModifierKey::Alt) => VK_MENU,
+            HotkeyKey::Modifier(ModifierKey::Shift) => VK_SHIFT,
+            HotkeyKey::Modifier(ModifierKey::Meta) => VK_LWIN,
+            HotkeyKey::Virtual(vk_code) => VIRTUAL_KEY(vk_code as u16),
+        };
+        send_key_down(virtual_key)
+    }
+
     fn send_key_up(key: VIRTUAL_KEY) -> Result<(), String> {
         send_keyboard_input(keyboard_input(key, true), "释放")
     }
@@ -1194,6 +1241,7 @@ mod platform_impl {
                 hotkey,
                 pressed: HashSet::new(),
                 captured_keys: HashSet::new(),
+                captured_order: Vec::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state: Box::new(|_| {}),
@@ -1215,6 +1263,10 @@ mod platform_impl {
 
         fn key_a() -> HotkeyKey {
             HotkeyKey::Virtual('A' as u32)
+        }
+
+        fn key_b() -> HotkeyKey {
+            HotkeyKey::Virtual('B' as u32)
         }
 
         #[test]
@@ -1318,6 +1370,30 @@ mod platform_impl {
 
             let _ = handle_hotkey_key_pressed(&mut context, alt());
             assert!(should_capture_event(&context, ctrl(), true));
+        }
+
+        #[test]
+        fn alt_only_hotkey_replays_tentative_alt_when_combo_key_follows() {
+            let mut context = context(hotkey(&["Alt"]));
+
+            assert!(should_capture_event(&context, alt(), true));
+            track_captured_event(&mut context, alt(), true);
+            let _ = handle_hotkey_key_pressed(&mut context, alt());
+
+            assert!(should_replay_captured_prefix(&context, key_a(), true));
+        }
+
+        #[test]
+        fn alt_combo_hotkey_captures_only_configured_combo_keys() {
+            let mut context = context(hotkey(&["Alt", "Space"]));
+
+            assert!(should_capture_event(&context, alt(), true));
+            track_captured_event(&mut context, alt(), true);
+            let _ = handle_hotkey_key_pressed(&mut context, alt());
+
+            assert!(!should_replay_captured_prefix(&context, space(), true));
+            assert!(should_capture_event(&context, space(), true));
+            assert!(should_replay_captured_prefix(&context, key_b(), true));
         }
 
         #[test]

@@ -18,7 +18,7 @@ let localPreviewConfig: AppConfig = {
   baseUrl: '',
   model: '',
   apiKeyRef: '',
-  hotkey: 'Alt',
+  hotkey: 'F8',
 };
 
 let localPreviewProviders: ProviderConfig[] = [];

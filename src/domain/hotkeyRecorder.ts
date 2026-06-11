@@ -5,6 +5,8 @@ const modifierAliases: Record<string, string> = {
   Meta: 'Meta',
 };
 const modifierKeys = ['Ctrl', 'Alt', 'Shift', 'Meta'];
+const browserReservedModifierKeys = ['Alt'];
+const unstableDefaultHotkeys = ['Ctrl+Shift+Space'];
 
 export function normalizeHotkeyKey(key: string): string {
   if (key === ' ') return 'Space';
@@ -38,6 +40,12 @@ export function formatHotkey(event: KeyboardEvent): string | null {
 export function isModifierOnlyHotkey(hotkey: string): boolean {
   const parts = hotkeyParts(hotkey);
   return parts.length > 0 && parts.every((part) => modifierKeys.includes(part));
+}
+
+export function usesBrowserReservedHotkey(hotkey: string): boolean {
+  const parts = hotkeyParts(hotkey);
+  return parts.some((part) => browserReservedModifierKeys.includes(part))
+    || unstableDefaultHotkeys.includes(parts.join('+'));
 }
 
 export function toHotkeyParts(hotkey: string): string[] {

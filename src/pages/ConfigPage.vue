@@ -4,7 +4,7 @@ import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import UiPanel from '../components/UiPanel.vue';
-import { formatHotkey, isModifierOnlyHotkey } from '../domain/hotkeyRecorder';
+import { formatHotkey, isModifierOnlyHotkey, usesBrowserReservedHotkey } from '../domain/hotkeyRecorder';
 import type { AppConfig, ProviderConfig } from '../types';
 
 const props = defineProps<{
@@ -25,7 +25,7 @@ const providerForm = reactive<ProviderConfig>({
   id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: true,
 });
 const selectedProviderId = ref<number | null>(null);
-const hotkey = ref('Alt');
+const hotkey = ref('F8');
 const recordingHotkey = ref(false);
 const pendingModifierOnlyHotkey = ref<string | null>(null);
 let hotkeyCaptureTimer: ReturnType<typeof window.setTimeout> | null = null;
@@ -65,6 +65,9 @@ function saveProvider() {
   emit('saveProvider', provider);
 }
 function saveHotkey() {
+  if (usesBrowserReservedHotkey(hotkey.value)) {
+    hotkey.value = 'F8';
+  }
   const provider = activeProvider.value;
   emit('save', {
     provider: provider?.provider ?? '',
@@ -81,12 +84,12 @@ function recordHotkey(event: KeyboardEvent) {
   const nextHotkey = formatHotkey(event);
   if (!nextHotkey) return;
   if (isModifierOnlyHotkey(nextHotkey)) { pendingModifierOnlyHotkey.value = nextHotkey; return; }
-  hotkey.value = nextHotkey; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
+  hotkey.value = usesBrowserReservedHotkey(nextHotkey) ? 'F8' : nextHotkey; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
 }
 function finishModifierOnlyHotkey(event: KeyboardEvent) {
   if (!recordingHotkey.value || !pendingModifierOnlyHotkey.value) return;
   event.preventDefault(); event.stopPropagation();
-  hotkey.value = pendingModifierOnlyHotkey.value; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
+  hotkey.value = usesBrowserReservedHotkey(pendingModifierOnlyHotkey.value) ? 'F8' : pendingModifierOnlyHotkey.value; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
 }
 function startHotkeyCapture() {
   recordingHotkey.value = true;

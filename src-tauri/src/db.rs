@@ -8,6 +8,8 @@ use crate::models::{
     PersonalizationPreferences, RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
 };
 
+const DEFAULT_HOTKEY: &str = "F8";
+
 pub struct AppDb {
     conn: Mutex<Connection>,
 }
@@ -40,7 +42,7 @@ impl Default for AppConfig {
             base_url: String::new(),
             model: String::new(),
             api_key_ref: String::new(),
-            hotkey: "Alt".to_string(),
+            hotkey: DEFAULT_HOTKEY.to_string(),
         }
     }
 }
@@ -123,6 +125,11 @@ impl AppDb {
     pub fn get_config(&self) -> Result<AppConfig> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
+        let normalized_hotkey = normalize_runtime_hotkey(&config.hotkey);
+        if normalized_hotkey != config.hotkey {
+            config.hotkey = normalized_hotkey;
+            Self::save_config_from_conn(&conn, &config)?;
+        }
         if let Some(provider) = Self::get_enabled_provider_from_conn(&conn)? {
             config.provider = provider.provider;
             config.base_url = provider.base_url;
@@ -498,6 +505,7 @@ impl AppDb {
     }
 
     fn save_config_from_conn(conn: &Connection, config: &AppConfig) -> Result<()> {
+        let hotkey = normalize_runtime_hotkey(&config.hotkey);
         conn.execute(
             r#"
             INSERT INTO app_config (id, provider, base_url, model, api_key_ref, hotkey)
@@ -514,7 +522,7 @@ impl AppDb {
                 config.base_url,
                 config.model,
                 config.api_key_ref,
-                config.hotkey
+                hotkey
             ],
         )?;
         Ok(())
@@ -683,6 +691,30 @@ impl ProviderConfig {
     }
 }
 
+fn normalize_runtime_hotkey(hotkey: &str) -> String {
+    let normalized = hotkey.trim();
+    if normalized.is_empty() {
+        return String::new();
+    }
+
+    if is_unsafe_runtime_hotkey(normalized) {
+        DEFAULT_HOTKEY.to_string()
+    } else {
+        normalized.to_string()
+    }
+}
+
+fn is_unsafe_runtime_hotkey(hotkey: &str) -> bool {
+    let parts: Vec<_> = hotkey.split('+').map(|part| part.trim()).collect();
+    parts
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("Alt"))
+        || (parts.len() == 3
+            && parts[0].eq_ignore_ascii_case("Ctrl")
+            && parts[1].eq_ignore_ascii_case("Shift")
+            && parts[2].eq_ignore_ascii_case("Space"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,5 +822,18 @@ mod tests {
 
         let styles = db.list_style_prompts().unwrap();
         assert!(styles.iter().all(|style| !style.enabled));
+    }
+
+    #[test]
+    fn normalizes_alt_hotkeys_to_browser_safe_default() {
+        let db = AppDb::in_memory().unwrap();
+        let config = AppConfig {
+            hotkey: "Alt".to_string(),
+            ..Default::default()
+        };
+
+        db.save_config(&config).unwrap();
+
+        assert_eq!(db.get_config().unwrap().hotkey, DEFAULT_HOTKEY);
     }
 }

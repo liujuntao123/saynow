@@ -165,7 +165,6 @@ mod platform_impl {
     struct HookContext {
         hotkey: HotkeySpec,
         pressed: HashSet<HotkeyKey>,
-        swallowed_keys: HashSet<HotkeyKey>,
         state: HotkeyState,
         release_miss_count: u8,
         emit_state: Box<dyn Fn(&str) + Send + Sync>,
@@ -454,7 +453,6 @@ mod platform_impl {
             *context = Some(HookContext {
                 hotkey,
                 pressed: HashSet::new(),
-                swallowed_keys: HashSet::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state,
@@ -513,24 +511,22 @@ mod platform_impl {
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
                 let modifier = modifier_from_vk(data.vkCode);
-                if handle_key_event(data.vkCode, modifier, pressed) {
-                    return LRESULT(1);
-                }
+                handle_key_event(data.vkCode, modifier, pressed);
             }
         }
         unsafe { CallNextHookEx(None, code, wparam, lparam) }
     }
 
-    fn handle_key_event(vk_code: u32, modifier: Option<ModifierKey>, pressed: bool) -> bool {
+    fn handle_key_event(vk_code: u32, modifier: Option<ModifierKey>, pressed: bool) {
         let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
         let Ok(mut context) = context_lock.lock() else {
-            return false;
+            return;
         };
         let Some(context) = context.as_mut() else {
-            return false;
+            return;
         };
         if context.should_stop.load(Ordering::Relaxed) {
-            return false;
+            return;
         }
 
         let key = event_key(vk_code, modifier);
@@ -541,8 +537,6 @@ mod platform_impl {
             handle_hotkey_key_released(context, key)
         };
 
-        let should_swallow = should_swallow_hotkey_event(context, key, pressed);
-
         if !pressed && modifier.is_some() && !context.state.recording() {
             clear_stale_non_modifier_keys(context);
         }
@@ -550,8 +544,6 @@ mod platform_impl {
         if let Some(reason) = release_reason {
             release_context_hotkey(context, reason);
         }
-
-        should_swallow
     }
 
     fn handle_hotkey_key_pressed(
@@ -773,35 +765,6 @@ mod platform_impl {
         context.pressed.clear();
     }
 
-    fn should_swallow_hotkey_event(
-        context: &mut HookContext,
-        key: HotkeyKey,
-        pressed: bool,
-    ) -> bool {
-        if pressed {
-            if context.swallowed_keys.contains(&key) {
-                return true;
-            }
-
-            if context.hotkey.required_keys.contains(&key)
-                && matches!(
-                    context.state,
-                    HotkeyState::Candidate { .. } | HotkeyState::Recording
-                )
-                && hotkey_exactly_pressed(&context.hotkey, &context.pressed)
-            {
-                context
-                    .swallowed_keys
-                    .extend(context.hotkey.required_keys.iter().copied());
-                return true;
-            }
-
-            return false;
-        }
-
-        context.swallowed_keys.remove(&key)
-    }
-
     fn modifier_from_vk(vk_code: u32) -> Option<ModifierKey> {
         let key = VIRTUAL_KEY(vk_code as u16);
         if key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL {
@@ -847,7 +810,6 @@ mod platform_impl {
                 cancel_hotkey_candidate(context);
                 if reason == "monitor stop requested" || reason == "hook cleanup" {
                     context.pressed.clear();
-                    context.swallowed_keys.clear();
                 }
             }
         }
@@ -859,7 +821,6 @@ mod platform_impl {
         }
         context.state = HotkeyState::Idle;
         context.release_miss_count = 0;
-        context.swallowed_keys.clear();
         eprintln!("[saynow] native hotkey released; reason={reason}");
         (context.emit_state)("Released");
     }
@@ -1190,7 +1151,6 @@ mod platform_impl {
             HookContext {
                 hotkey,
                 pressed: HashSet::new(),
-                swallowed_keys: HashSet::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state: Box::new(|_| {}),

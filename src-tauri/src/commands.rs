@@ -822,9 +822,21 @@ mod tests {
             remove_trailing_period: false,
         };
 
-        assert_eq!(apply_text_preferences("你好。".to_string(), &enabled), "你好");
-        assert_eq!(apply_text_preferences("hello.".to_string(), &enabled), "hello");
-        assert_eq!(apply_text_preferences("你好！".to_string(), &enabled), "你好！");
-        assert_eq!(apply_text_preferences("你好。".to_string(), &disabled), "你好。");
+        assert_eq!(
+            apply_text_preferences("你好。".to_string(), &enabled),
+            "你好"
+        );
+        assert_eq!(
+            apply_text_preferences("hello.".to_string(), &enabled),
+            "hello"
+        );
+        assert_eq!(
+            apply_text_preferences("你好！".to_string(), &enabled),
+            "你好！"
+        );
+        assert_eq!(
+            apply_text_preferences("你好。".to_string(), &disabled),
+            "你好。"
+        );
     }
 }

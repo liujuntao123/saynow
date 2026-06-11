@@ -165,6 +165,7 @@ mod platform_impl {
     struct HookContext {
         hotkey: HotkeySpec,
         pressed: HashSet<HotkeyKey>,
+        captured_keys: HashSet<HotkeyKey>,
         state: HotkeyState,
         release_miss_count: u8,
         emit_state: Box<dyn Fn(&str) + Send + Sync>,
@@ -209,6 +210,7 @@ mod platform_impl {
     struct HotkeySpec {
         modifiers: HashSet<ModifierKey>,
         required_keys: HashSet<HotkeyKey>,
+        capture_events: bool,
     }
 
     pub fn inject_text(text: &str) -> Result<(), String> {
@@ -382,9 +384,11 @@ mod platform_impl {
             .map(HotkeyKey::Modifier)
             .chain(trigger.map(HotkeyKey::Virtual))
             .collect();
+        let capture_events = modifiers.contains(&ModifierKey::Alt);
         Ok(HotkeySpec {
             modifiers,
             required_keys,
+            capture_events,
         })
     }
 
@@ -453,6 +457,7 @@ mod platform_impl {
             *context = Some(HookContext {
                 hotkey,
                 pressed: HashSet::new(),
+                captured_keys: HashSet::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state,
@@ -511,25 +516,28 @@ mod platform_impl {
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
                 let modifier = modifier_from_vk(data.vkCode);
-                handle_key_event(data.vkCode, modifier, pressed);
+                if handle_key_event(data.vkCode, modifier, pressed) {
+                    return LRESULT(1);
+                }
             }
         }
         unsafe { CallNextHookEx(None, code, wparam, lparam) }
     }
 
-    fn handle_key_event(vk_code: u32, modifier: Option<ModifierKey>, pressed: bool) {
+    fn handle_key_event(vk_code: u32, modifier: Option<ModifierKey>, pressed: bool) -> bool {
         let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
         let Ok(mut context) = context_lock.lock() else {
-            return;
+            return false;
         };
         let Some(context) = context.as_mut() else {
-            return;
+            return false;
         };
         if context.should_stop.load(Ordering::Relaxed) {
-            return;
+            return false;
         }
 
         let key = event_key(vk_code, modifier);
+        let should_capture = should_capture_event(context, key, pressed);
         let release_reason = if pressed {
             context.release_miss_count = 0;
             handle_hotkey_key_pressed(context, key)
@@ -544,6 +552,16 @@ mod platform_impl {
         if let Some(reason) = release_reason {
             release_context_hotkey(context, reason);
         }
+
+        if should_capture {
+            if pressed {
+                context.captured_keys.insert(key);
+            } else {
+                context.captured_keys.remove(&key);
+            }
+        }
+
+        should_capture
     }
 
     fn handle_hotkey_key_pressed(
@@ -682,6 +700,10 @@ mod platform_impl {
     }
 
     fn tracked_hotkey_is_down(context: &HookContext) -> bool {
+        if context.hotkey.capture_events {
+            return hotkey_exactly_pressed(&context.hotkey, &context.pressed);
+        }
+
         hotkey_exactly_pressed(&context.hotkey, &context.pressed)
             && all_unconfigured_modifiers_are_up(&context.hotkey)
             && context
@@ -737,6 +759,10 @@ mod platform_impl {
     }
 
     fn retain_physically_pressed_keys(context: &mut HookContext) {
+        if context.hotkey.capture_events {
+            return;
+        }
+
         context.pressed.retain(|key| hotkey_key_is_down(*key));
         if matches!(context.state, HotkeyState::Candidate { .. })
             && !hotkey_exactly_pressed(&context.hotkey, &context.pressed)
@@ -763,6 +789,21 @@ mod platform_impl {
             context.pressed
         );
         context.pressed.clear();
+    }
+
+    fn should_capture_event(context: &HookContext, key: HotkeyKey, pressed: bool) -> bool {
+        if !context.hotkey.capture_events || !context.hotkey.required_keys.contains(&key) {
+            return false;
+        }
+
+        if !pressed {
+            return context.captured_keys.contains(&key);
+        }
+
+        key == HotkeyKey::Modifier(ModifierKey::Alt)
+            || context
+                .pressed
+                .contains(&HotkeyKey::Modifier(ModifierKey::Alt))
     }
 
     fn modifier_from_vk(vk_code: u32) -> Option<ModifierKey> {
@@ -810,6 +851,7 @@ mod platform_impl {
                 cancel_hotkey_candidate(context);
                 if reason == "monitor stop requested" || reason == "hook cleanup" {
                     context.pressed.clear();
+                    context.captured_keys.clear();
                 }
             }
         }
@@ -1151,6 +1193,7 @@ mod platform_impl {
             HookContext {
                 hotkey,
                 pressed: HashSet::new(),
+                captured_keys: HashSet::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
                 emit_state: Box::new(|_| {}),
@@ -1245,6 +1288,36 @@ mod platform_impl {
             let _ = handle_hotkey_key_pressed(&mut context, alt());
 
             assert!(hotkey_exactly_pressed(&context.hotkey, &context.pressed));
+        }
+
+        #[test]
+        fn alt_hotkeys_use_captured_software_state_for_candidate_confirmation() {
+            let mut context = context(hotkey(&["Alt"]));
+            let _ = handle_hotkey_key_pressed(&mut context, alt());
+
+            assert!(context.hotkey.capture_events);
+            assert!(tracked_hotkey_is_down(&context));
+        }
+
+        #[test]
+        fn non_alt_hotkeys_do_not_use_capture_mode() {
+            let context = context(hotkey(&["Ctrl", "Space"]));
+
+            assert!(!context.hotkey.capture_events);
+        }
+
+        #[test]
+        fn alt_capture_starts_with_alt_not_other_modifiers() {
+            let mut context = context(hotkey(&["Ctrl", "Alt"]));
+
+            assert!(!should_capture_event(&context, ctrl(), true));
+
+            let _ = handle_hotkey_key_pressed(&mut context, ctrl());
+            assert!(!should_capture_event(&context, ctrl(), true));
+            assert!(should_capture_event(&context, alt(), true));
+
+            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            assert!(should_capture_event(&context, ctrl(), true));
         }
 
         #[test]

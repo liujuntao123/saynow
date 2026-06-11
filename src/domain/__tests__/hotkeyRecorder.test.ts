@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatHotkey, isEventPartOfHotkey, isModifierOnlyHotkey, toHotkeyParts, usesBrowserReservedHotkey } from '../hotkeyRecorder';
+import { formatHotkey, isEventPartOfHotkey, isModifierOnlyHotkey, toHotkeyParts } from '../hotkeyRecorder';
 
 function keyEvent(input: Partial<KeyboardEvent>): KeyboardEvent {
   return input as KeyboardEvent;
@@ -40,10 +40,4 @@ describe('hotkey recorder', () => {
     expect(isEventPartOfHotkey(keyEvent({ key: 'k', ctrlKey: true, shiftKey: true }), 'Ctrl+K')).toBe(false);
   });
 
-  it('flags browser-reserved Alt hotkeys', () => {
-    expect(usesBrowserReservedHotkey('Alt')).toBe(true);
-    expect(usesBrowserReservedHotkey('Alt+Space')).toBe(true);
-    expect(usesBrowserReservedHotkey('Ctrl+Shift+Space')).toBe(true);
-    expect(usesBrowserReservedHotkey('F8')).toBe(false);
-  });
 });

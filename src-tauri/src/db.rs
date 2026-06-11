@@ -8,7 +8,7 @@ use crate::models::{
     PersonalizationPreferences, RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
 };
 
-const DEFAULT_HOTKEY: &str = "F8";
+const DEFAULT_HOTKEY: &str = "Alt";
 
 pub struct AppDb {
     conn: Mutex<Connection>,
@@ -125,9 +125,8 @@ impl AppDb {
     pub fn get_config(&self) -> Result<AppConfig> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
-        let normalized_hotkey = normalize_runtime_hotkey(&config.hotkey);
-        if normalized_hotkey != config.hotkey {
-            config.hotkey = normalized_hotkey;
+        if config.hotkey.trim() == "F8" {
+            config.hotkey = DEFAULT_HOTKEY.to_string();
             Self::save_config_from_conn(&conn, &config)?;
         }
         if let Some(provider) = Self::get_enabled_provider_from_conn(&conn)? {
@@ -438,9 +437,7 @@ impl AppDb {
         );
         match result {
             Ok(preferences) => Ok(preferences),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                Ok(PersonalizationPreferences::default())
-            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(PersonalizationPreferences::default()),
             Err(error) => Err(error),
         }
     }
@@ -457,7 +454,11 @@ impl AppDb {
             ON CONFLICT(id) DO UPDATE SET
                 remove_trailing_period = excluded.remove_trailing_period
             "#,
-            [if preferences.remove_trailing_period { 1 } else { 0 }],
+            [if preferences.remove_trailing_period {
+                1
+            } else {
+                0
+            }],
         )?;
         Ok(())
     }
@@ -505,7 +506,7 @@ impl AppDb {
     }
 
     fn save_config_from_conn(conn: &Connection, config: &AppConfig) -> Result<()> {
-        let hotkey = normalize_runtime_hotkey(&config.hotkey);
+        let hotkey = config.hotkey.trim();
         conn.execute(
             r#"
             INSERT INTO app_config (id, provider, base_url, model, api_key_ref, hotkey)
@@ -691,30 +692,6 @@ impl ProviderConfig {
     }
 }
 
-fn normalize_runtime_hotkey(hotkey: &str) -> String {
-    let normalized = hotkey.trim();
-    if normalized.is_empty() {
-        return String::new();
-    }
-
-    if is_unsafe_runtime_hotkey(normalized) {
-        DEFAULT_HOTKEY.to_string()
-    } else {
-        normalized.to_string()
-    }
-}
-
-fn is_unsafe_runtime_hotkey(hotkey: &str) -> bool {
-    let parts: Vec<_> = hotkey.split('+').map(|part| part.trim()).collect();
-    parts
-        .iter()
-        .any(|part| part.eq_ignore_ascii_case("Alt"))
-        || (parts.len() == 3
-            && parts[0].eq_ignore_ascii_case("Ctrl")
-            && parts[1].eq_ignore_ascii_case("Shift")
-            && parts[2].eq_ignore_ascii_case("Space"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_alt_hotkeys_to_browser_safe_default() {
+    fn stores_alt_hotkeys_without_rewriting_them() {
         let db = AppDb::in_memory().unwrap();
         let config = AppConfig {
             hotkey: "Alt".to_string(),
@@ -834,6 +811,19 @@ mod tests {
 
         db.save_config(&config).unwrap();
 
-        assert_eq!(db.get_config().unwrap().hotkey, DEFAULT_HOTKEY);
+        assert_eq!(db.get_config().unwrap().hotkey, "Alt");
+    }
+
+    #[test]
+    fn repairs_previous_f8_default_migration_to_alt() {
+        let db = AppDb::in_memory().unwrap();
+        let config = AppConfig {
+            hotkey: "F8".to_string(),
+            ..Default::default()
+        };
+
+        db.save_config(&config).unwrap();
+
+        assert_eq!(db.get_config().unwrap().hotkey, "Alt");
     }
 }

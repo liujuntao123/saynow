@@ -18,10 +18,16 @@ describe('buildPromptPreview', () => {
     expect(prompt).toContain('Kunlun');
     expect(prompt).toContain('昆仑');
     expect(prompt).toContain('整理为简洁书面语');
+    expect(prompt).toContain('保留说话者原本的情绪');
+    expect(prompt).toContain('保留自然语气词');
+    expect(prompt).toContain('清理明显口误');
+    expect(prompt).toContain('不补充、不删改原意');
     expect(prompt).toContain('6月3号');
     expect(prompt).toContain('9:05');
     expect(prompt).toContain('第2次');
     expect(prompt).toContain('15%');
+    expect(prompt).toContain('嗯，我觉得这个方案吧');
+    expect(prompt).toContain('还挺顺的');
     expect(prompt).toContain('昨天讨论 Kunlun 模型导出');
     expect(prompt).not.toContain('unused');
     expect(prompt).not.toContain('失败记录');

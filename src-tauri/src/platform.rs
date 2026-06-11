@@ -138,7 +138,7 @@ mod platform_impl {
     const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(20);
     const HOTKEY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
-    const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(500);
+    const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(200);
     const CLIPBOARD_OPEN_RETRIES: usize = 8;
     const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(20);
     const INPUT_TARGET_SETTLE_DELAY: Duration = Duration::from_millis(80);

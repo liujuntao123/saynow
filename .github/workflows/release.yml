@@ -49,6 +49,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "saynow v__VERSION__"
           releaseBody: "Windows 安装包见本 Release 附件。"
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
           args: --features desktop

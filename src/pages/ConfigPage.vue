@@ -33,6 +33,7 @@ const HOTKEY_CAPTURE_TIMEOUT_MS = 15_000;
 
 const templates = [
   { id: 'mimo', label: 'MiMo', provider: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5', apiKeyRef: 'credential-manager:mimo' },
+  { id: 'mimo-asr', label: 'MiMo ASR', provider: 'MiMo ASR', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-asr', apiKeyRef: 'credential-manager:mimo' },
   { id: 'qwen', label: 'Qwen', provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.5-omni-plus', apiKeyRef: 'credential-manager:qwen' },
 ];
 
@@ -302,11 +303,12 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 
 /* 模板按钮 */
 .provider-editor { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.template-grid { display: flex; gap: 10px; margin-bottom: 18px; }
+.template-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
 .template-button {
-  display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 20px;
+  display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 10px 16px; border-radius: 20px;
   background: #f5f5f7; border: 1px solid transparent; color: #555; font-size: 13px; font-weight: 500;
 }
+.template-button strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .template-button:hover { background: #ebebeb; }
 .template-button.selected { background: rgba(15,143,131,0.08); border-color: rgba(15,143,131,0.2); color: #0f8f83; }
 .template-radio { display: none; }

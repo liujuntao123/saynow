@@ -12,8 +12,8 @@ use crate::{
     platform::{current_platform_status, inject_text, PlatformStatus},
     prompt::build_prompt_context,
     provider::{
-        build_openai_compatible_payload, extract_openai_compatible_text, first_qwen_stream_text,
-        is_qwen_provider, push_qwen_stream_line,
+        build_openai_compatible_payload, extract_openai_compatible_text,
+        first_openai_compatible_stream_text, push_openai_compatible_stream_line,
     },
     stats::{aggregate_usage_stats, UsageStats},
 };
@@ -299,17 +299,19 @@ where
         return Err(format!("识别请求返回 {status}：{body}"));
     }
 
-    let text = if uses_qwen_stream_response(config) {
+    let text = if uses_stream_response(&payload) {
         let mut content = String::new();
         let mut reasoning_content = String::new();
         let reader = std::io::BufReader::new(response);
         for line in reader.lines() {
             let line = line.map_err(|error| format!("读取识别响应失败：{error}"))?;
-            if let Some(text) = push_qwen_stream_line(&line, &mut content, &mut reasoning_content) {
+            if let Some(text) =
+                push_openai_compatible_stream_line(&line, &mut content, &mut reasoning_content)
+            {
                 on_transcript(text);
             }
         }
-        first_qwen_stream_text(content, reasoning_content)
+        first_openai_compatible_stream_text(content, reasoning_content)
             .ok_or_else(|| "识别响应中没有可用文本。".to_string())?
     } else {
         let body = response
@@ -327,8 +329,11 @@ where
     Ok(text)
 }
 
-fn uses_qwen_stream_response(config: &crate::db::AppConfig) -> bool {
-    is_qwen_provider(&config.provider) || config.model.to_ascii_lowercase().contains("qwen")
+fn uses_stream_response(payload: &Value) -> bool {
+    payload
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn uses_mimo_api_key_header(config: &crate::db::AppConfig) -> bool {

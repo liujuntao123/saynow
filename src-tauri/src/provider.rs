@@ -25,6 +25,10 @@ pub fn build_openai_compatible_payload(
 }
 
 fn build_mimo_payload(model: &str, prompt: &str, audio_base64: &str, mime_type: &str) -> Value {
+    if is_mimo_asr_model(model) {
+        return build_mimo_asr_payload(model, audio_base64, mime_type);
+    }
+
     let audio_data = audio_data_url_with_mime(audio_base64, mime_type);
     json!({
         "model": model,
@@ -47,7 +51,41 @@ fn build_mimo_payload(model: &str, prompt: &str, audio_base64: &str, mime_type: 
             }
         ],
         "temperature": 0.1,
-        "max_completion_tokens": 1024
+        "max_completion_tokens": 1024,
+        "stream": true,
+        "stream_options": {
+            "include_usage": true
+        },
+        "thinking": {
+            "type": "disabled"
+        }
+    })
+}
+
+fn build_mimo_asr_payload(model: &str, audio_base64: &str, mime_type: &str) -> Value {
+    let audio_data = audio_data_url_with_mime(audio_base64, mime_type);
+    json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": audio_data
+                        }
+                    }
+                ]
+            }
+        ],
+        "asr_options": {
+            "language": "auto"
+        },
+        "stream": true,
+        "stream_options": {
+            "include_usage": true
+        }
     })
 }
 
@@ -100,37 +138,42 @@ pub fn extract_openai_compatible_text(response: &Value) -> Option<String> {
     .map(ToOwned::to_owned)
 }
 
-pub fn extract_qwen_stream_text(body: &str) -> Option<String> {
+pub fn extract_openai_compatible_stream_text(body: &str) -> Option<String> {
     let mut content = String::new();
     let mut reasoning_content = String::new();
 
     for line in body.lines() {
-        push_qwen_stream_line(line, &mut content, &mut reasoning_content);
+        push_openai_compatible_stream_line(line, &mut content, &mut reasoning_content);
     }
 
-    first_qwen_stream_text(content, reasoning_content)
+    first_openai_compatible_stream_text(content, reasoning_content)
 }
 
-pub fn push_qwen_stream_line(
+pub fn push_openai_compatible_stream_line(
     line: &str,
     content: &mut String,
     reasoning_content: &mut String,
 ) -> Option<String> {
-    if let Some(text) = extract_qwen_stream_delta(line, "/choices/0/delta/content") {
+    if let Some(text) = extract_openai_compatible_stream_delta(line, "/choices/0/delta/content") {
         content.push_str(&text);
         return Some(content.clone());
     }
-    if let Some(text) = extract_qwen_stream_delta(line, "/choices/0/delta/reasoning_content") {
+    if let Some(text) =
+        extract_openai_compatible_stream_delta(line, "/choices/0/delta/reasoning_content")
+    {
         reasoning_content.push_str(&text);
     }
     None
 }
 
-pub fn first_qwen_stream_text(content: String, reasoning_content: String) -> Option<String> {
+pub fn first_openai_compatible_stream_text(
+    content: String,
+    reasoning_content: String,
+) -> Option<String> {
     first_non_empty_text([content, reasoning_content])
 }
 
-fn extract_qwen_stream_delta(line: &str, path: &str) -> Option<String> {
+fn extract_openai_compatible_stream_delta(line: &str, path: &str) -> Option<String> {
     let line = line.trim();
     let data = line.strip_prefix("data:")?.trim();
     if data.is_empty() || data == "[DONE]" {
@@ -212,6 +255,10 @@ pub fn is_qwen_provider(provider: &str) -> bool {
     provider.to_ascii_lowercase().contains("qwen")
 }
 
+fn is_mimo_asr_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("-asr")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +269,8 @@ mod tests {
             build_openai_compatible_payload("MiMo", "mimo-v2.5", "prompt", "AAA", "audio/wav");
 
         assert_eq!(payload["model"], "mimo-v2.5");
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["thinking"]["type"], "disabled");
         assert_eq!(payload["messages"][0]["content"], "prompt");
         assert_eq!(payload["messages"][1]["content"][0]["type"], "text");
         assert_eq!(
@@ -229,6 +278,28 @@ mod tests {
             "data:audio/wav;base64,AAA"
         );
         assert!(payload["messages"][1]["content"][1]["input_audio"]["format"].is_null());
+    }
+
+    #[test]
+    fn builds_mimo_asr_payload_without_text_parts() {
+        let payload = build_openai_compatible_payload(
+            "MiMo",
+            "mimo-v2.5-asr",
+            "prompt",
+            "AAA",
+            "audio/wav",
+        );
+
+        assert_eq!(payload["model"], "mimo-v2.5-asr");
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["asr_options"]["language"], "auto");
+        assert!(payload["thinking"].is_null());
+        assert_eq!(payload["messages"][0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["messages"][0]["content"][0]["type"], "input_audio");
+        assert_eq!(
+            payload["messages"][0]["content"][0]["input_audio"]["data"],
+            "data:audio/wav;base64,AAA"
+        );
     }
 
     #[test]
@@ -290,6 +361,35 @@ data: {"choices":[{"delta":{"content":"上好"}}]}
 data: {"choices":[],"usage":{"total_tokens":10}}
 "#;
 
-        assert_eq!(extract_qwen_stream_text(body), Some("早上好".to_string()));
+        assert_eq!(
+            extract_openai_compatible_stream_text(body),
+            Some("早上好".to_string())
+        );
+    }
+
+    #[test]
+    fn streams_openai_compatible_content_before_reasoning_fallback() {
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+
+        assert_eq!(
+            push_openai_compatible_stream_line(
+                r#"data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}"#,
+                &mut content,
+                &mut reasoning_content,
+            ),
+            None
+        );
+        assert_eq!(
+            push_openai_compatible_stream_line(
+                r#"data: {"choices":[{"delta":{"content":"final"}}]}"#,
+                &mut content,
+                &mut reasoning_content,
+            ),
+            Some("final".to_string())
+        );
+
+        assert_eq!(content, "final");
+        assert_eq!(reasoning_content, "thinking");
     }
 }

@@ -48,8 +48,17 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "saynow v__VERSION__"
-          releaseBody: "Windows 安装包见本 Release 附件。"
-          generateReleaseNotes: true
+          releaseBody: |
+            Windows 安装包见本 Release 附件。
+
+            ## Change Log
+
+            - 修复按下快捷键后录音浮窗已显示、但麦克风尚未真正开始采集导致开头漏录的问题。
+            - 录音启动现在会等待浏览器确认 MediaRecorder 已开始，再显示“正在录音”状态。
+            - 将原生热键按住确认延迟从 200ms 降低到 60ms，减少用户开口前的固定等待。
+            - 增加录音启动耗时日志，便于排查麦克风 ready 延迟。
+            - 学习规则状态和风险等级改为中文展示，并增加问号说明提示。
+          generateReleaseNotes: false
           releaseDraft: false
           prerelease: false
           args: --features desktop

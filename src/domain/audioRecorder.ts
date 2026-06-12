@@ -27,8 +27,35 @@ export function createAudioRecorder() {
       mediaRecorder.addEventListener('dataavailable', (event) => {
         if (event.data.size > 0) chunks.push(event.data);
       });
-      startedAt = Date.now();
-      mediaRecorder.start();
+      await new Promise<void>((resolve, reject) => {
+        const recorder = mediaRecorder;
+        if (!recorder) {
+          reject(new Error('录音器初始化失败。'));
+          return;
+        }
+        recorder.addEventListener(
+          'start',
+          () => {
+            startedAt = Date.now();
+            resolve();
+          },
+          { once: true },
+        );
+        recorder.addEventListener(
+          'error',
+          (event) => {
+            cleanup();
+            reject(event instanceof ErrorEvent ? event.error : new Error('录音启动失败。'));
+          },
+          { once: true },
+        );
+        try {
+          recorder.start();
+        } catch (error) {
+          cleanup();
+          reject(error);
+        }
+      });
     },
     async stop() {
       if (!mediaRecorder || mediaRecorder.state === 'inactive') {

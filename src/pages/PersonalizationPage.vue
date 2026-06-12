@@ -81,6 +81,26 @@ function saveLearningEngine() {
     idleSeconds: Number(learningEngineForm.idleSeconds) || 30,
   });
 }
+function learningRuleStatusText(status: string) {
+  const labels: Record<string, string> = {
+    candidate: '候选规则',
+    active: '已采用',
+    pinned: '已固定',
+    rejected: '已忽略',
+  };
+  return labels[status] ?? '待确认';
+}
+function learningRuleRiskText(risk: string) {
+  const labels: Record<string, string> = {
+    low: '低风险',
+    medium: '中风险',
+    high: '高风险',
+  };
+  return labels[risk] ?? '风险未知';
+}
+function learningRuleTip(rule: LearningRule) {
+  return `${learningRuleStatusText(rule.status)}：这条规则由学习引擎从纠错记录中整理得出。${learningRuleRiskText(rule.risk)}：表示自动放入识别提示词时的误伤风险。`;
+}
 </script>
 
 <template>
@@ -250,7 +270,15 @@ function saveLearningEngine() {
           <div v-for="rule in learningRules" :key="rule.id" class="learning-rule-item">
             <div class="learning-rule-head">
               <strong>{{ rule.description }}</strong>
-              <span class="rule-badge" :class="[rule.status, rule.risk]">{{ rule.status }} · {{ rule.risk }}</span>
+              <span class="rule-badge-wrap">
+                <span class="rule-badge" :class="[rule.status, rule.risk]">
+                  {{ learningRuleStatusText(rule.status) }} · {{ learningRuleRiskText(rule.risk) }}
+                </span>
+                <span class="rule-help" tabindex="0" :aria-label="learningRuleTip(rule)">
+                  <AppIcon name="question" />
+                  <span class="rule-tip" role="tooltip">{{ learningRuleTip(rule) }}</span>
+                </span>
+              </span>
             </div>
             <p v-if="rule.matchHints || rule.fromText || rule.toText">
               <span v-if="rule.matchHints">上下文：{{ rule.matchHints }}</span>
@@ -415,9 +443,22 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .learning-rule-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
 .learning-rule-head strong { min-width: 0; color: #1d1d1f; font-size: 14px; line-height: 1.45; font-weight: 700; overflow-wrap: anywhere; }
 .learning-rule-item p { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0; color: #62706c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.rule-badge { flex: 0 0 auto; max-width: 128px; border-radius: 999px; padding: 4px 8px; background: rgba(100,116,139,0.1); color: #64748b; font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-badge-wrap { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; max-width: min(220px, 46%); position: relative; }
+.rule-badge { min-width: 0; border-radius: 999px; padding: 4px 8px; background: rgba(100,116,139,0.1); color: #64748b; font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rule-badge.candidate, .rule-badge.active, .rule-badge.pinned { background: rgba(15,143,131,0.1); color: #08776f; }
 .rule-badge.high { background: #f8e6e4; color: #c84d4d; }
+.rule-help {
+  position: relative; flex: 0 0 auto; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: #f0f0f5; color: #86868b; font-size: 11px; cursor: help; outline: none;
+}
+.rule-help:hover, .rule-help:focus-visible { background: rgba(15,143,131,0.12); color: #08776f; }
+.rule-tip {
+  position: absolute; z-index: 5; right: 0; top: calc(100% + 8px); width: min(260px, 72vw); padding: 10px 12px;
+  border-radius: 10px; background: #1d1d1f; color: #fff; font-size: 12px; line-height: 1.5; font-weight: 500;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16); white-space: normal; overflow-wrap: anywhere;
+  opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+}
+.rule-help:hover .rule-tip, .rule-help:focus-visible .rule-tip { opacity: 1; visibility: visible; transform: translateY(0); }
 .correction-record-list { display: grid; gap: 10px; max-height: 360px; overflow-y: auto; padding-right: 4px; scrollbar-gutter: stable; }
 .correction-record-item { display: grid; gap: 10px; min-width: 0; padding: 14px; border-radius: 14px; background: #fafafa; border: 1px solid #f0f0f5; }
 .correction-record-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

@@ -145,7 +145,7 @@ function startHotkeyRecording() {
   clearLearningEngineIdleTimer();
   hotkeyRecording.value = true;
   armRecordingGuard();
-  recordingStartPromise = beginRecording();
+  recordingStartPromise = beginRecording(performance.now());
 }
 
 async function stopHotkeyRecording(reason = 'hotkey released') {
@@ -225,13 +225,13 @@ async function removeProvider(id: number) {
   }
 }
 
-async function beginRecording() {
+async function beginRecording(triggeredAt: number) {
   try {
-    debugLog('showing recorder overlay');
-    await showRecorderOverlay('recording');
     debugLog('requesting microphone stream');
     await audioRecorder.start();
-    debugLog('microphone recording started');
+    const readyMs = Math.round(performance.now() - triggeredAt);
+    debugLog('microphone recording started', { readyMs });
+    await showRecorderOverlay('recording');
   } catch (error) {
     hotkeyRecording.value = false;
     clearRecordingGuard();

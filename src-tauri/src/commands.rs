@@ -5,11 +5,12 @@ use serde_json::Value;
 
 use crate::{
     db::{AppConfig, AppDb, ProviderConfig},
+    learning::{build_llm_learning_payload, extract_learning_rules, parse_llm_learning_rules},
     models::{
-        PersonalizationPreferences, RecognitionRecord, RecognitionStatus, StylePrompt,
-        VocabularyItem,
+        CorrectionRecord, LearningEngineConfig, LearningRule, PersonalizationPreferences,
+        RecognitionRecord, RecognitionStatus, SaveCorrectionInput, StylePrompt, VocabularyItem,
     },
-    platform::{current_platform_status, inject_text, PlatformStatus},
+    platform::{current_platform_status, inject_text, replace_last_injected_text, PlatformStatus},
     prompt::build_prompt_context,
     provider::{
         build_openai_compatible_payload, extract_openai_compatible_text,
@@ -91,6 +92,185 @@ pub fn list_records_data(db: &AppDb) -> Result<Vec<RecognitionRecord>, String> {
     db.list_records(200).map_err(|error| error.to_string())
 }
 
+pub fn list_correction_records_data(db: &AppDb) -> Result<Vec<CorrectionRecord>, String> {
+    db.list_correction_records(200)
+        .map_err(|error| error.to_string())
+}
+
+pub fn list_learning_rules_data(db: &AppDb) -> Result<Vec<LearningRule>, String> {
+    db.list_learning_rules(200)
+        .map_err(|error| error.to_string())
+}
+
+pub fn refresh_learning_rules_data(db: &AppDb) -> Result<Vec<LearningRule>, String> {
+    let corrections = db
+        .list_correction_records(200)
+        .map_err(|error| error.to_string())?;
+    let rules = extract_learning_rules(&corrections);
+    for rule in rules {
+        db.upsert_learning_rule(&rule)
+            .map_err(|error| error.to_string())?;
+    }
+    list_learning_rules_data(db)
+}
+
+pub fn run_learning_engine_data(db: &AppDb, force: bool) -> Result<Vec<LearningRule>, String> {
+    let config = db
+        .get_learning_engine_config()
+        .map_err(|error| error.to_string())?;
+    eprintln!(
+        "[saynow] learning engine requested; enabled={} mode={} force={} min_new_corrections={}",
+        config.enabled, config.run_mode, force, config.min_new_corrections
+    );
+    if !config.enabled && !force {
+        eprintln!("[saynow] learning engine skipped: disabled");
+        return list_learning_rules_data(db);
+    }
+
+    let limit = config.min_new_corrections.max(1) as usize;
+    let corrections = db
+        .list_unprocessed_correction_records(if force { 200 } else { limit })
+        .map_err(|error| error.to_string())?;
+    eprintln!(
+        "[saynow] learning engine loaded corrections; count={}",
+        corrections.len()
+    );
+    if corrections.is_empty() || (!force && corrections.len() < limit) {
+        eprintln!("[saynow] learning engine skipped: insufficient corrections");
+        return list_learning_rules_data(db);
+    }
+
+    let rules = if config.run_mode == "localOnly" {
+        eprintln!("[saynow] learning engine using localOnly extractor");
+        extract_learning_rules(&corrections)
+    } else {
+        run_llm_learning(
+            &config,
+            &corrections,
+            &db.list_learning_rules(50)
+                .map_err(|error| error.to_string())?,
+        )?
+    };
+
+    eprintln!(
+        "[saynow] learning engine generated rules; count={}",
+        rules.len()
+    );
+    for rule in &rules {
+        eprintln!(
+            "[saynow] learning rule upsert; type={} status={} risk={} confidence={} evidence={}",
+            rule.rule_type, rule.status, rule.risk, rule.confidence, rule.evidence_correction_ids
+        );
+        db.upsert_learning_rule(rule)
+            .map_err(|error| error.to_string())?;
+    }
+    let ids = corrections
+        .iter()
+        .map(|correction| correction.id)
+        .collect::<Vec<_>>();
+    db.mark_corrections_learning_processed(&ids)
+        .map_err(|error| error.to_string())?;
+    list_learning_rules_data(db)
+}
+
+fn run_llm_learning(
+    config: &LearningEngineConfig,
+    corrections: &[CorrectionRecord],
+    existing_rules: &[LearningRule],
+) -> Result<Vec<LearningRule>, String> {
+    if !config.has_complete_provider() {
+        return Err("学习引擎 LLM 配置不完整。".to_string());
+    }
+    let api_key = resolve_api_key(&config.api_key_ref)?;
+    let payload = build_llm_learning_payload(&config.model, corrections, existing_rules);
+    eprintln!(
+        "[saynow] learning engine sending LLM request; provider={} model={} corrections={} payload_chars={}",
+        config.provider,
+        config.model,
+        corrections.len(),
+        payload.to_string().chars().count()
+    );
+    let url = format!(
+        "{}/chat/completions",
+        config.base_url.trim().trim_end_matches('/')
+    );
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("学习引擎请求失败：{error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("学习引擎响应读取失败：{error}"))?;
+    eprintln!(
+        "[saynow] learning engine response; status={} body_chars={}",
+        status,
+        body.chars().count()
+    );
+    if !status.is_success() {
+        return Err(format!(
+            "学习引擎响应失败：HTTP {status} {}",
+            body.chars().take(500).collect::<String>()
+        ));
+    }
+    let value: Value =
+        serde_json::from_str(&body).map_err(|error| format!("学习引擎响应不是 JSON：{error}"))?;
+    let text = extract_openai_compatible_text(&value)
+        .or_else(|| {
+            value
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| "学习引擎响应中没有可解析内容。".to_string())?;
+    eprintln!(
+        "[saynow] learning engine content extracted; chars={}",
+        text.chars().count()
+    );
+    parse_llm_learning_rules(&text)
+}
+
+pub fn save_correction_data(
+    db: &AppDb,
+    input: SaveCorrectionInput,
+) -> Result<CorrectionRecord, String> {
+    let raw_text = input.raw_text.trim();
+    let corrected_text = input.corrected_text.trim();
+    if raw_text.is_empty() {
+        return Err("原始识别文本为空，无法保存纠错。".to_string());
+    }
+    if corrected_text.is_empty() {
+        return Err("修正文案为空，无法保存纠错。".to_string());
+    }
+    if raw_text == corrected_text {
+        return Err("修正文案与原始文本相同，已跳过纠错记录。".to_string());
+    }
+
+    let replacement_error = if input.apply_replacement {
+        replace_last_injected_text(corrected_text).err()
+    } else {
+        None
+    };
+    let correction = db
+        .insert_correction_record(
+            input.recognition_record_id,
+            raw_text,
+            corrected_text,
+            input.source.trim(),
+            input.apply_replacement && replacement_error.is_none(),
+            replacement_error.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(correction)
+}
+
+pub fn undo_last_injected_text_data() -> Result<(), String> {
+    crate::platform::undo_last_injected_text()
+}
+
 pub fn list_vocabulary_data(db: &AppDb) -> Result<Vec<VocabularyItem>, String> {
     db.list_vocabulary().map_err(|error| error.to_string())
 }
@@ -157,6 +337,34 @@ pub fn save_personalization_preferences_data(
     Ok(preferences)
 }
 
+pub fn get_learning_engine_config_data(db: &AppDb) -> Result<LearningEngineConfig, String> {
+    db.get_learning_engine_config()
+        .map_err(|error| error.to_string())
+}
+
+pub fn save_learning_engine_config_data(
+    db: &AppDb,
+    mut config: LearningEngineConfig,
+) -> Result<LearningEngineConfig, String> {
+    config.provider = config.provider.trim().to_string();
+    config.base_url = config.base_url.trim().to_string();
+    config.model = config.model.trim().to_string();
+    config.api_key_ref = config.api_key_ref.trim().to_string();
+    config.run_mode = if config.run_mode == "localOnly" {
+        "localOnly".to_string()
+    } else {
+        "llmAssist".to_string()
+    };
+    config.min_new_corrections = config.min_new_corrections.max(1);
+    config.idle_seconds = config.idle_seconds.max(5);
+    if config.enabled && config.run_mode == "llmAssist" && !config.has_complete_provider() {
+        return Err("启用学习引擎前，请填写完整的 LLM 供应商、URL、模型和 API Key。".to_string());
+    }
+    db.save_learning_engine_config(&config)
+        .map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
 pub fn recognize_audio_data(
     db: &AppDb,
     input: RecognitionAudioInput,
@@ -194,13 +402,17 @@ where
     let vocabulary = db.list_vocabulary().map_err(|error| error.to_string())?;
     let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
     let records = db.list_records(10).map_err(|error| error.to_string())?;
-    let prompt = build_prompt_context(&vocabulary, &styles, &records);
+    let learning_rules = db
+        .list_learning_rules(20)
+        .map_err(|error| error.to_string())?;
+    let prompt = build_prompt_context(&vocabulary, &styles, &records, &learning_rules);
     eprintln!(
-        "[saynow] recognize_audio building request; provider={} model={} mime={} prompt_chars={}",
+        "[saynow] recognize_audio building request; provider={} model={} mime={} prompt_chars={} learning_rules={}",
         config.provider,
         config.model,
         input.mime_type,
-        prompt.chars().count()
+        prompt.chars().count(),
+        learning_rules.len()
     );
     let payload = build_openai_compatible_payload(
         &config.provider,
@@ -460,6 +672,37 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub fn list_correction_records(db: State<'_, AppDb>) -> Result<Vec<CorrectionRecord>, String> {
+        list_correction_records_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn save_correction(
+        db: State<'_, AppDb>,
+        input: SaveCorrectionInput,
+    ) -> Result<CorrectionRecord, String> {
+        save_correction_data(&db, input)
+    }
+
+    #[tauri::command]
+    pub fn list_learning_rules(db: State<'_, AppDb>) -> Result<Vec<LearningRule>, String> {
+        list_learning_rules_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn refresh_learning_rules(db: State<'_, AppDb>) -> Result<Vec<LearningRule>, String> {
+        refresh_learning_rules_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn run_learning_engine(
+        db: State<'_, AppDb>,
+        force: bool,
+    ) -> Result<Vec<LearningRule>, String> {
+        run_learning_engine_data(&db, force)
+    }
+
+    #[tauri::command]
     pub fn list_vocabulary(db: State<'_, AppDb>) -> Result<Vec<VocabularyItem>, String> {
         list_vocabulary_data(&db)
     }
@@ -527,6 +770,21 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub fn get_learning_engine_config(
+        db: State<'_, AppDb>,
+    ) -> Result<LearningEngineConfig, String> {
+        get_learning_engine_config_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn save_learning_engine_config(
+        db: State<'_, AppDb>,
+        config: LearningEngineConfig,
+    ) -> Result<LearningEngineConfig, String> {
+        save_learning_engine_config_data(&db, config)
+    }
+
+    #[tauri::command]
     pub fn recognize_audio<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
         db: State<'_, AppDb>,
@@ -564,6 +822,7 @@ mod tauri_commands {
             let hwnd = window
                 .hwnd()
                 .map_err(|error| format!("无法获取录音浮窗句柄：{error}"))?;
+            crate::platform::configure_no_activate_window(hwnd.0 as isize)?;
             crate::platform::show_no_activate_window(hwnd.0 as isize)
         }
 
@@ -571,6 +830,24 @@ mod tauri_commands {
         {
             window.show().map_err(|error| error.to_string())
         }
+    }
+
+    #[tauri::command]
+    pub fn show_recorder_overlay_focus<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let window = recorder_window(&app)?;
+
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = window
+                .hwnd()
+                .map_err(|error| format!("无法获取录音浮窗句柄：{error}"))?;
+            crate::platform::make_window_focusable(hwnd.0 as isize)?;
+        }
+
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())
     }
 
     #[tauri::command]
@@ -604,6 +881,17 @@ mod tauri_commands {
             .map_err(|error| error.to_string())
     }
 
+    #[tauri::command]
+    pub fn set_recorder_overlay_size<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+        width: f64,
+        height: f64,
+    ) -> Result<(), String> {
+        recorder_window(&app)?
+            .set_size(tauri::PhysicalSize::new(width, height))
+            .map_err(|error| error.to_string())
+    }
+
     fn recorder_window<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
     ) -> Result<tauri::WebviewWindow<R>, String> {
@@ -624,6 +912,11 @@ mod tauri_commands {
         crate::platform::restore_input_target()
     }
 
+    #[tauri::command]
+    pub fn undo_last_injected_text() -> Result<(), String> {
+        undo_last_injected_text_data()
+    }
+
     pub fn handlers<R: tauri::Runtime>(
     ) -> Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static> {
         Box::new(tauri::generate_handler![
@@ -635,6 +928,11 @@ mod tauri_commands {
             select_provider_config,
             delete_provider_config,
             list_records,
+            list_correction_records,
+            save_correction,
+            list_learning_rules,
+            refresh_learning_rules,
+            run_learning_engine,
             list_vocabulary,
             add_vocabulary,
             add_vocabulary_terms,
@@ -645,12 +943,17 @@ mod tauri_commands {
             delete_style_prompt,
             get_personalization_preferences,
             save_personalization_preferences,
+            get_learning_engine_config,
+            save_learning_engine_config,
             recognize_audio,
             show_recorder_overlay_no_activate,
+            show_recorder_overlay_focus,
             hide_recorder_overlay,
             set_recorder_overlay_position,
+            set_recorder_overlay_size,
             set_hotkey_monitor,
-            restore_input_target
+            restore_input_target,
+            undo_last_injected_text
         ])
     }
 }
@@ -739,6 +1042,133 @@ mod tests {
 
         let providers = delete_provider_config_data(&db, qwen.id).unwrap();
         assert!(providers.iter().all(|provider| provider.provider != "Qwen"));
+    }
+
+    #[test]
+    fn saves_manual_correction_without_replacement() {
+        let db = AppDb::in_memory().unwrap();
+
+        let correction = save_correction_data(
+            &db,
+            SaveCorrectionInput {
+                recognition_record_id: 42,
+                raw_text: "status不应该会是一吧".to_string(),
+                corrected_text: "status不应该会是1吧".to_string(),
+                source: "post-insert-overlay".to_string(),
+                apply_replacement: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(correction.recognition_record_id, 42);
+        assert_eq!(correction.raw_text, "status不应该会是一吧");
+        assert_eq!(correction.corrected_text, "status不应该会是1吧");
+        assert_eq!(correction.source, "post-insert-overlay");
+        assert!(!correction.applied);
+        assert!(correction.error_message.is_none());
+        assert_eq!(list_correction_records_data(&db).unwrap().len(), 1);
+        assert!(list_learning_rules_data(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn skips_unchanged_manual_correction() {
+        let db = AppDb::in_memory().unwrap();
+
+        let error = save_correction_data(
+            &db,
+            SaveCorrectionInput {
+                recognition_record_id: 42,
+                raw_text: "没有变化".to_string(),
+                corrected_text: "没有变化".to_string(),
+                source: "post-insert-overlay".to_string(),
+                apply_replacement: false,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("相同"));
+        assert!(list_correction_records_data(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn repeated_corrections_promote_learning_rule_candidate() {
+        let db = AppDb::in_memory().unwrap();
+        save_learning_engine_config_data(
+            &db,
+            LearningEngineConfig {
+                enabled: true,
+                run_mode: "localOnly".to_string(),
+                min_new_corrections: 2,
+                ..LearningEngineConfig::default()
+            },
+        )
+        .unwrap();
+
+        for (raw_text, corrected_text) in [
+            ("status不应该会是一吧", "status不应该会是1吧"),
+            ("这个status又是一", "这个status又是1"),
+        ] {
+            save_correction_data(
+                &db,
+                SaveCorrectionInput {
+                    recognition_record_id: 42,
+                    raw_text: raw_text.to_string(),
+                    corrected_text: corrected_text.to_string(),
+                    source: "post-insert-overlay".to_string(),
+                    apply_replacement: false,
+                },
+            )
+            .unwrap();
+        }
+
+        run_learning_engine_data(&db, false).unwrap();
+        let rules = list_learning_rules_data(&db).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].status, "candidate");
+        assert_eq!(rules[0].evidence_correction_ids, "1,2");
+        assert!(rules[0].confidence > 0.7);
+    }
+
+    #[test]
+    fn manages_learning_engine_config() {
+        let db = AppDb::in_memory().unwrap();
+
+        let default_config = get_learning_engine_config_data(&db).unwrap();
+        assert!(!default_config.enabled);
+        assert_eq!(default_config.run_mode, "llmAssist");
+
+        let missing_provider = save_learning_engine_config_data(
+            &db,
+            LearningEngineConfig {
+                enabled: true,
+                ..LearningEngineConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(missing_provider.contains("完整"));
+
+        let saved = save_learning_engine_config_data(
+            &db,
+            LearningEngineConfig {
+                enabled: true,
+                provider: "OpenAI".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4.1-mini".to_string(),
+                api_key_ref: "credential-manager:openai".to_string(),
+                run_mode: "llmAssist".to_string(),
+                min_new_corrections: 0,
+                idle_seconds: 1,
+            },
+        )
+        .unwrap();
+
+        assert!(saved.enabled);
+        assert_eq!(saved.min_new_corrections, 1);
+        assert_eq!(saved.idle_seconds, 5);
+        assert_eq!(
+            get_learning_engine_config_data(&db).unwrap().model,
+            "gpt-4.1-mini"
+        );
     }
 
     #[test]

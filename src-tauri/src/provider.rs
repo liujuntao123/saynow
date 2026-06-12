@@ -282,19 +282,17 @@ mod tests {
 
     #[test]
     fn builds_mimo_asr_payload_without_text_parts() {
-        let payload = build_openai_compatible_payload(
-            "MiMo",
-            "mimo-v2.5-asr",
-            "prompt",
-            "AAA",
-            "audio/wav",
-        );
+        let payload =
+            build_openai_compatible_payload("MiMo", "mimo-v2.5-asr", "prompt", "AAA", "audio/wav");
 
         assert_eq!(payload["model"], "mimo-v2.5-asr");
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["asr_options"]["language"], "auto");
         assert!(payload["thinking"].is_null());
-        assert_eq!(payload["messages"][0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            payload["messages"][0]["content"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(payload["messages"][0]["content"][0]["type"], "input_audio");
         assert_eq!(
             payload["messages"][0]["content"][0]["input_audio"]["data"],

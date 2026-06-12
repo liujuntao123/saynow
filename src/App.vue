@@ -10,7 +10,10 @@ import {
   deleteVocabulary,
   getConfig,
   getDashboard,
+  getLearningEngineConfig,
   hideRecorderOverlayWindow,
+  listCorrectionRecords,
+  listLearningRules,
   listProviderConfigs,
   listRecords,
   listStylePrompts,
@@ -18,14 +21,20 @@ import {
   recognizeAudio,
   restoreInputTarget,
   saveConfig,
+  saveLearningEngineConfig,
   saveProviderConfig,
   deleteProviderConfig,
   selectProviderConfig,
   getPersonalizationPreferences,
+  saveCorrection,
   setHotkeyMonitor,
   setRecorderOverlayPosition,
+  setRecorderOverlaySize,
   showRecorderOverlayNoActivate,
+  showRecorderOverlayFocus,
   savePersonalizationPreferences,
+  runLearningEngine,
+  undoLastInjectedText,
   updateStylePrompt,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
@@ -38,7 +47,10 @@ import HomePage from './pages/HomePage.vue';
 import PersonalizationPage from './pages/PersonalizationPage.vue';
 import type {
   AppConfig,
+  CorrectionRecord,
   DashboardData,
+  LearningEngineConfig,
+  LearningRule,
   PersonalizationPreferences,
   ProviderConfig,
   RecognitionRecord,
@@ -51,9 +63,21 @@ const dashboard = ref<DashboardData | null>(null);
 const config = ref<AppConfig | null>(null);
 const providers = ref<ProviderConfig[]>([]);
 const records = ref<RecognitionRecord[]>([]);
+const correctionRecords = ref<CorrectionRecord[]>([]);
 const vocabulary = ref<VocabularyItem[]>([]);
 const styles = ref<StylePrompt[]>([]);
 const personalizationPreferences = ref<PersonalizationPreferences>({ removeTrailingPeriod: false });
+const learningEngineConfig = ref<LearningEngineConfig>({
+  enabled: false,
+  provider: '',
+  baseUrl: '',
+  model: '',
+  apiKeyRef: '',
+  runMode: 'llmAssist',
+  minNewCorrections: 5,
+  idleSeconds: 30,
+});
+const learningRules = ref<LearningRule[]>([]);
 const busy = ref(false);
 const saving = ref(false);
 const hotkeyRecording = ref(false);
@@ -64,11 +88,19 @@ let unlistenHotkeyState: (() => void) | null = null;
 let recordingGuardTimer: ReturnType<typeof window.setTimeout> | null = null;
 let hotkeyMonitorRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
 let hotkeyStateListenRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
+let correctionPromptTimer: ReturnType<typeof window.setTimeout> | null = null;
+let learningEngineIdleTimer: ReturnType<typeof window.setTimeout> | null = null;
+let unlistenCorrectionEditRequested: (() => void) | null = null;
+let unlistenCorrectionSubmit: (() => void) | null = null;
+let unlistenCorrectionDismiss: (() => void) | null = null;
+let unlistenCorrectionUndo: (() => void) | null = null;
 let mounted = false;
-const RECORDER_OVERLAY_SIZE = { width: 760, height: 52 };
+const RECORDER_OVERLAY_COMPACT_SIZE = { width: 760, height: 58 };
+const RECORDER_OVERLAY_EDITOR_SIZE = { width: 760, height: 180 };
 const MAX_HOTKEY_RECORDING_MS = 120_000;
 const HOTKEY_MONITOR_RETRY_MS = 1500;
 const HOTKEY_STATE_LISTEN_RETRY_MS = 1500;
+const CORRECTION_PROMPT_TIMEOUT_MS = 4000;
 
 const currentPage = computed(() => activePage.value);
 const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
@@ -88,22 +120,29 @@ async function refreshAll() {
   config.value = await getConfig();
   providers.value = await listProviderConfigs();
   records.value = await listRecords();
+  correctionRecords.value = await listCorrectionRecords();
   vocabulary.value = await listVocabulary();
   styles.value = await listStylePrompts();
   personalizationPreferences.value = await getPersonalizationPreferences();
+  learningEngineConfig.value = await getLearningEngineConfig();
+  learningRules.value = await listLearningRules();
   debugLog('app data refreshed', {
     hotkey: config.value.hotkey,
     providers: providers.value.length,
     records: records.value.length,
+    corrections: correctionRecords.value.length,
     vocabulary: vocabulary.value.length,
     styles: styles.value.length,
     removeTrailingPeriod: personalizationPreferences.value.removeTrailingPeriod,
+    learningEngineEnabled: learningEngineConfig.value.enabled,
+    learningRules: learningRules.value.length,
   });
 }
 
 function startHotkeyRecording() {
   if (busy.value || hotkeyRecording.value) return;
   debugLog('hotkey pressed; starting recording');
+  clearLearningEngineIdleTimer();
   hotkeyRecording.value = true;
   armRecordingGuard();
   recordingStartPromise = beginRecording();
@@ -215,6 +254,9 @@ async function finishRecording() {
       const record = await recognizeAudio(audio);
       debugLog('recognition finished', { id: record.id, status: record.status, textLength: record.text.length, error: record.errorMessage });
       await refreshAll();
+      if (record.status === 'success' && record.text.trim()) {
+        await showCorrectionPrompt(record);
+      }
     }
   } catch (error) {
     await showRecorderOverlay('error');
@@ -228,18 +270,23 @@ async function finishRecording() {
     busy.value = false;
     recordingStartPromise = null;
   }
-  await hideRecorderOverlay();
+  if (!correctionPromptTimer) {
+    await hideRecorderOverlay();
+  }
 }
 
 async function showRecorderOverlay(state: 'recording' | 'processing' | 'error') {
   if (!isTauriRuntime) return;
+  clearCorrectionPromptTimer();
+  await resizeRecorderOverlay(RECORDER_OVERLAY_COMPACT_SIZE);
   await emitTo('recorder', 'recorder-state', { state });
-  await positionRecorderOverlay();
+  await positionRecorderOverlay(RECORDER_OVERLAY_COMPACT_SIZE);
   await showRecorderOverlayNoActivate();
 }
 
 async function hideRecorderOverlay() {
   if (!isTauriRuntime) return;
+  clearCorrectionPromptTimer();
   await hideRecorderOverlayWindow();
   await resetRecorderOverlay();
 }
@@ -249,13 +296,17 @@ async function resetRecorderOverlay() {
   await emitTo('recorder', 'recorder-reset');
 }
 
-async function positionRecorderOverlay() {
+async function resizeRecorderOverlay(size: { width: number; height: number }) {
+  await setRecorderOverlaySize(size.width, size.height).catch(() => undefined);
+}
+
+async function positionRecorderOverlay(size: { width: number; height: number }) {
   const monitor = await resolveRecorderMonitor();
   if (!monitor) return;
   const position = calculateRecorderOverlayPosition({
     workArea: monitor.workArea,
     scaleFactor: monitor.scaleFactor,
-    overlaySize: RECORDER_OVERLAY_SIZE,
+    overlaySize: size,
     marginBottom: 18,
   });
   await setRecorderOverlayPosition(position.x, position.y).catch(() => undefined);
@@ -343,6 +394,95 @@ function clearHotkeyStateListenRetry() {
   hotkeyStateListenRetryTimer = null;
 }
 
+async function showCorrectionPrompt(record: RecognitionRecord) {
+  if (!isTauriRuntime) return;
+  clearCorrectionPromptTimer();
+  await resizeRecorderOverlay(RECORDER_OVERLAY_COMPACT_SIZE);
+  await emitTo('recorder', 'recorder-state', {
+    state: 'correctionPrompt',
+    recordId: record.id,
+    text: record.text,
+  });
+  await positionRecorderOverlay(RECORDER_OVERLAY_COMPACT_SIZE);
+  await showRecorderOverlayNoActivate();
+  correctionPromptTimer = window.setTimeout(() => {
+    void hideRecorderOverlay();
+  }, CORRECTION_PROMPT_TIMEOUT_MS);
+}
+
+function clearCorrectionPromptTimer() {
+  if (!correctionPromptTimer) return;
+  window.clearTimeout(correctionPromptTimer);
+  correctionPromptTimer = null;
+}
+
+async function openCorrectionEditor() {
+  clearCorrectionPromptTimer();
+  await resizeRecorderOverlay(RECORDER_OVERLAY_EDITOR_SIZE);
+  await positionRecorderOverlay(RECORDER_OVERLAY_EDITOR_SIZE);
+  await showRecorderOverlayFocus();
+}
+
+async function submitCorrection(payload: {
+  recognitionRecordId: number;
+  rawText: string;
+  correctedText: string;
+}) {
+  clearCorrectionPromptTimer();
+  try {
+    const correction = await saveCorrection({
+      ...payload,
+      source: 'post-insert-overlay',
+      applyReplacement: true,
+    });
+    debugLog('correction saved', {
+      id: correction.id,
+      recognitionRecordId: correction.recognitionRecordId,
+      applied: correction.applied,
+      error: correction.errorMessage,
+    });
+    await refreshAll();
+    scheduleLearningEngineRun();
+  } catch (error) {
+    console.error('[saynow] failed to save correction', error);
+  } finally {
+    await hideRecorderOverlay();
+  }
+}
+
+function subscribeCorrectionEvents() {
+  if (!isTauriRuntime || !mounted) return;
+  void listen('correction-edit-requested', () => {
+    void openCorrectionEditor();
+  }).then((unlisten) => {
+    unlistenCorrectionEditRequested = unlisten;
+  });
+  void listen<{
+    recognitionRecordId: number;
+    rawText: string;
+    correctedText: string;
+  }>('correction-submit', (event) => {
+    void submitCorrection(event.payload);
+  }).then((unlisten) => {
+    unlistenCorrectionSubmit = unlisten;
+  });
+  void listen('correction-dismiss', () => {
+    void hideRecorderOverlay();
+  }).then((unlisten) => {
+    unlistenCorrectionDismiss = unlisten;
+  });
+  void listen('correction-undo', () => {
+    clearCorrectionPromptTimer();
+    void undoLastInjectedText()
+      .catch((error) => console.error('[saynow] failed to undo last injected text', error))
+      .finally(() => {
+        void hideRecorderOverlay();
+      });
+  }).then((unlisten) => {
+    unlistenCorrectionUndo = unlisten;
+  });
+}
+
 function suppressRuntimeHotkeyDomEvent(event: KeyboardEvent) {
   if (!runtimeHotkeyEnabled.value || !isEventPartOfHotkey(event, config.value?.hotkey)) return;
   event.preventDefault();
@@ -379,6 +519,60 @@ async function savePersonalizationPreferenceSettings(preferences: Personalizatio
   await refreshAll();
 }
 
+async function saveLearningEngineSettings(config: LearningEngineConfig) {
+  saving.value = true;
+  try {
+    learningEngineConfig.value = await saveLearningEngineConfig(config);
+    await refreshAll();
+    scheduleLearningEngineRun();
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function runLearningEngineNow() {
+  saving.value = true;
+  clearLearningEngineIdleTimer();
+  try {
+    await runLearningEngine(true);
+    await refreshAll();
+  } finally {
+    saving.value = false;
+  }
+}
+
+function scheduleLearningEngineRun() {
+  clearLearningEngineIdleTimer();
+  const learningConfig = learningEngineConfig.value;
+  if (!isTauriRuntime || !learningConfig.enabled || hotkeyRecording.value || busy.value) {
+    debugLog('learning engine schedule skipped', {
+      enabled: learningConfig.enabled,
+      hotkeyRecording: hotkeyRecording.value,
+      busy: busy.value,
+    });
+    return;
+  }
+  const delayMs = Math.max(5, learningConfig.idleSeconds || 30) * 1000;
+  debugLog('learning engine scheduled', {
+    delayMs,
+    minNewCorrections: learningConfig.minNewCorrections,
+    mode: learningConfig.runMode,
+  });
+  learningEngineIdleTimer = window.setTimeout(() => {
+    learningEngineIdleTimer = null;
+    debugLog('learning engine idle timer fired');
+    void runLearningEngine(false)
+      .then(() => refreshAll())
+      .catch((error) => console.error('[saynow] failed to run scheduled learning engine', error));
+  }, delayMs);
+}
+
+function clearLearningEngineIdleTimer() {
+  if (!learningEngineIdleTimer) return;
+  window.clearTimeout(learningEngineIdleTimer);
+  learningEngineIdleTimer = null;
+}
+
 watch(
   () => config.value?.hotkey,
   (hotkey) => {
@@ -399,6 +593,7 @@ onMounted(() => {
   window.addEventListener('keydown', suppressRuntimeHotkeyDomEvent, true);
   window.addEventListener('keyup', suppressRuntimeHotkeyDomEvent, true);
   subscribeHotkeyStateEvents();
+  subscribeCorrectionEvents();
   void refreshAll()
     .then(() => registerRuntimeHotkey(config.value?.hotkey))
     .catch((error) => console.error('[saynow] failed to initialize app runtime', error));
@@ -409,9 +604,15 @@ onBeforeUnmount(() => {
   clearRecordingGuard();
   clearHotkeyMonitorRetry();
   clearHotkeyStateListenRetry();
+  clearCorrectionPromptTimer();
+  clearLearningEngineIdleTimer();
   window.removeEventListener('keydown', suppressRuntimeHotkeyDomEvent, true);
   window.removeEventListener('keyup', suppressRuntimeHotkeyDomEvent, true);
   unlistenHotkeyState?.();
+  unlistenCorrectionEditRequested?.();
+  unlistenCorrectionSubmit?.();
+  unlistenCorrectionDismiss?.();
+  unlistenCorrectionUndo?.();
   void setHotkeyMonitor(null).catch(() => undefined);
 });
 </script>
@@ -439,12 +640,18 @@ onBeforeUnmount(() => {
       :vocabulary="vocabulary"
       :styles="styles"
       :preferences="personalizationPreferences"
+      :learning-engine-config="learningEngineConfig"
+      :learning-rules="learningRules"
+      :correction-records="correctionRecords"
+      :saving="saving"
       @add-vocabulary-terms="createVocabularyTerms"
       @delete-vocabulary="removeVocabulary"
       @add-style="createStyle"
       @update-style="saveStyle"
       @delete-style="removeStyle"
       @update-preferences="savePersonalizationPreferenceSettings"
+      @update-learning-engine="saveLearningEngineSettings"
+      @run-learning-engine="runLearningEngineNow"
     />
     <FeedbackPage v-else />
   </AppShell>

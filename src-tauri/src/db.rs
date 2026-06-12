@@ -1,11 +1,12 @@
 use std::sync::Mutex;
 
 use chrono::Utc;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, Result, Row};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    PersonalizationPreferences, RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
+    CorrectionRecord, LearningEngineConfig, LearningRule, PersonalizationPreferences,
+    RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
 };
 
 const DEFAULT_HOTKEY: &str = "Alt";
@@ -117,8 +118,77 @@ impl AppDb {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 remove_trailing_period INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS correction_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                recognition_record_id INTEGER NOT NULL,
+                raw_text TEXT NOT NULL,
+                corrected_text TEXT NOT NULL,
+                source TEXT NOT NULL,
+                applied INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                learning_processed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS learning_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                match_hints TEXT NOT NULL,
+                from_text TEXT NOT NULL,
+                to_text TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                status TEXT NOT NULL,
+                evidence_correction_ids TEXT NOT NULL,
+                risk TEXT NOT NULL DEFAULT 'medium',
+                UNIQUE(rule_type, match_hints, from_text, to_text)
+            );
+
+            CREATE TABLE IF NOT EXISTS learning_engine_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                model TEXT NOT NULL,
+                api_key_ref TEXT NOT NULL,
+                run_mode TEXT NOT NULL,
+                min_new_corrections INTEGER NOT NULL,
+                idle_seconds INTEGER NOT NULL
+            );
             "#,
         )?;
+        Self::add_column_if_missing(
+            &conn,
+            "correction_records",
+            "learning_processed_at",
+            "learning_processed_at TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "learning_rules",
+            "risk",
+            "risk TEXT NOT NULL DEFAULT 'medium'",
+        )?;
+        Ok(())
+    }
+
+    fn add_column_if_missing(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<()> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        if columns.iter().any(|name| name == column) {
+            return Ok(());
+        }
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), [])?;
         Ok(())
     }
 
@@ -315,6 +385,218 @@ impl AppDb {
         rows.collect()
     }
 
+    pub fn insert_correction_record(
+        &self,
+        recognition_record_id: i64,
+        raw_text: &str,
+        corrected_text: &str,
+        source: &str,
+        applied: bool,
+        error_message: Option<&str>,
+    ) -> Result<CorrectionRecord> {
+        let created_at = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            r#"
+            INSERT INTO correction_records
+                (created_at, recognition_record_id, raw_text, corrected_text, source, applied, error_message)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                created_at,
+                recognition_record_id,
+                raw_text,
+                corrected_text,
+                source,
+                if applied { 1 } else { 0 },
+                error_message
+            ],
+        )?;
+        Ok(CorrectionRecord {
+            id: conn.last_insert_rowid(),
+            created_at,
+            recognition_record_id,
+            raw_text: raw_text.to_string(),
+            corrected_text: corrected_text.to_string(),
+            source: source.to_string(),
+            applied,
+            error_message: error_message.map(str::to_string),
+            learning_processed_at: None,
+        })
+    }
+
+    pub fn list_correction_records(&self, limit: usize) -> Result<Vec<CorrectionRecord>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, created_at, recognition_record_id, raw_text, corrected_text, source, applied, error_message, learning_processed_at
+            FROM correction_records
+            ORDER BY id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok(CorrectionRecord {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                recognition_record_id: row.get(2)?,
+                raw_text: row.get(3)?,
+                corrected_text: row.get(4)?,
+                source: row.get(5)?,
+                applied: row.get::<_, i64>(6)? == 1,
+                error_message: row.get(7)?,
+                learning_processed_at: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_unprocessed_correction_records(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<CorrectionRecord>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, created_at, recognition_record_id, raw_text, corrected_text, source, applied, error_message, learning_processed_at
+            FROM correction_records
+            WHERE learning_processed_at IS NULL
+            ORDER BY id ASC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok(CorrectionRecord {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                recognition_record_id: row.get(2)?,
+                raw_text: row.get(3)?,
+                corrected_text: row.get(4)?,
+                source: row.get(5)?,
+                applied: row.get::<_, i64>(6)? == 1,
+                error_message: row.get(7)?,
+                learning_processed_at: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn mark_corrections_learning_processed(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let processed_at = Utc::now().to_rfc3339();
+        let mut conn = self.conn.lock().expect("database mutex poisoned");
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE correction_records SET learning_processed_at = ?1 WHERE id = ?2",
+            )?;
+            for id in ids {
+                stmt.execute(params![processed_at, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn upsert_learning_rule(&self, rule: &LearningRule) -> Result<LearningRule> {
+        let now = Utc::now().to_rfc3339();
+        let created_at = if rule.created_at.trim().is_empty() {
+            now.clone()
+        } else {
+            rule.created_at.clone()
+        };
+        let updated_at = now;
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            r#"
+            INSERT INTO learning_rules
+                (created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(rule_type, match_hints, from_text, to_text) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                description = excluded.description,
+                confidence = excluded.confidence,
+                status = excluded.status,
+                evidence_correction_ids = excluded.evidence_correction_ids,
+                risk = excluded.risk
+            "#,
+            params![
+                created_at,
+                updated_at,
+                rule.rule_type,
+                rule.description,
+                rule.match_hints,
+                rule.from_text,
+                rule.to_text,
+                rule.confidence,
+                rule.status,
+                rule.evidence_correction_ids,
+                rule.risk
+            ],
+        )?;
+        conn.query_row(
+            r#"
+            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk
+            FROM learning_rules
+            WHERE rule_type = ?1 AND match_hints = ?2 AND from_text = ?3 AND to_text = ?4
+            "#,
+            params![rule.rule_type, rule.match_hints, rule.from_text, rule.to_text],
+            Self::learning_rule_from_row,
+        )
+    }
+
+    pub fn find_learning_rule(
+        &self,
+        rule_type: &str,
+        match_hints: &str,
+        from_text: &str,
+        to_text: &str,
+    ) -> Result<LearningRule> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.query_row(
+            r#"
+            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk
+            FROM learning_rules
+            WHERE rule_type = ?1 AND match_hints = ?2 AND from_text = ?3 AND to_text = ?4
+            "#,
+            params![rule_type, match_hints, from_text, to_text],
+            Self::learning_rule_from_row,
+        )
+    }
+
+    pub fn list_learning_rules(&self, limit: usize) -> Result<Vec<LearningRule>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk
+            FROM learning_rules
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map([limit as i64], Self::learning_rule_from_row)?;
+        rows.collect()
+    }
+
+    fn learning_rule_from_row(row: &Row<'_>) -> Result<LearningRule> {
+        Ok(LearningRule {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            updated_at: row.get(2)?,
+            rule_type: row.get(3)?,
+            description: row.get(4)?,
+            match_hints: row.get(5)?,
+            from_text: row.get(6)?,
+            to_text: row.get(7)?,
+            confidence: row.get(8)?,
+            status: row.get(9)?,
+            evidence_correction_ids: row.get(10)?,
+            risk: row.get(11)?,
+        })
+    }
+
     pub fn list_vocabulary(&self) -> Result<Vec<VocabularyItem>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn.prepare(
@@ -459,6 +741,65 @@ impl AppDb {
             } else {
                 0
             }],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_learning_engine_config(&self) -> Result<LearningEngineConfig> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.query_row(
+            r#"
+            SELECT enabled, provider, base_url, model, api_key_ref, run_mode, min_new_corrections, idle_seconds
+            FROM learning_engine_config
+            WHERE id = 1
+            "#,
+            [],
+            |row| {
+                Ok(LearningEngineConfig {
+                    enabled: row.get::<_, i64>(0)? == 1,
+                    provider: row.get(1)?,
+                    base_url: row.get(2)?,
+                    model: row.get(3)?,
+                    api_key_ref: row.get(4)?,
+                    run_mode: row.get(5)?,
+                    min_new_corrections: row.get::<_, i64>(6)? as u32,
+                    idle_seconds: row.get::<_, i64>(7)? as u32,
+                })
+            },
+        )
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(LearningEngineConfig::default()),
+            error => Err(error),
+        })
+    }
+
+    pub fn save_learning_engine_config(&self, config: &LearningEngineConfig) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            r#"
+            INSERT INTO learning_engine_config
+                (id, enabled, provider, base_url, model, api_key_ref, run_mode, min_new_corrections, idle_seconds)
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(id) DO UPDATE SET
+                enabled = excluded.enabled,
+                provider = excluded.provider,
+                base_url = excluded.base_url,
+                model = excluded.model,
+                api_key_ref = excluded.api_key_ref,
+                run_mode = excluded.run_mode,
+                min_new_corrections = excluded.min_new_corrections,
+                idle_seconds = excluded.idle_seconds
+            "#,
+            params![
+                if config.enabled { 1 } else { 0 },
+                config.provider.trim(),
+                config.base_url.trim(),
+                config.model.trim(),
+                config.api_key_ref.trim(),
+                config.run_mode.trim(),
+                config.min_new_corrections.max(1),
+                config.idle_seconds.max(5),
+            ],
         )?;
         Ok(())
     }

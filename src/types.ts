@@ -22,6 +22,41 @@ export interface RecognitionRecord {
   errorMessage?: string | null;
 }
 
+export interface CorrectionRecord {
+  id: number;
+  createdAt: string;
+  recognitionRecordId: number;
+  rawText: string;
+  correctedText: string;
+  source: string;
+  applied: boolean;
+  errorMessage?: string | null;
+  learningProcessedAt?: string | null;
+}
+
+export interface SaveCorrectionInput {
+  recognitionRecordId: number;
+  rawText: string;
+  correctedText: string;
+  source: string;
+  applyReplacement: boolean;
+}
+
+export interface LearningRule {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+  ruleType: string;
+  description: string;
+  matchHints: string;
+  fromText: string;
+  toText: string;
+  confidence: number;
+  status: string;
+  evidenceCorrectionIds: string;
+  risk: string;
+}
+
 export interface AppConfig {
   provider: string;
   baseUrl: string;
@@ -57,6 +92,17 @@ export interface StylePrompt {
 
 export interface PersonalizationPreferences {
   removeTrailingPeriod: boolean;
+}
+
+export interface LearningEngineConfig {
+  enabled: boolean;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  apiKeyRef: string;
+  runMode: 'localOnly' | 'llmAssist';
+  minNewCorrections: number;
+  idleSeconds: number;
 }
 
 export interface DashboardData {

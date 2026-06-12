@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   PhBookOpen,
+  PhArrowCounterClockwise,
   PhCheck,
   PhClock,
   PhDatabase,
@@ -30,6 +31,7 @@ const props = defineProps<{
 
 const icons = {
   activity: PhPulse,
+  undo: PhArrowCounterClockwise,
   book: PhBookOpen,
   check: PhCheck,
   clock: PhClock,

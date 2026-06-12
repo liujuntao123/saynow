@@ -37,6 +37,18 @@ pub fn inject_text(text: &str) -> Result<(), String> {
     platform_impl::inject_text(text)
 }
 
+pub fn replace_last_injected_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("修正文案为空，已取消替换。".to_string());
+    }
+
+    platform_impl::replace_last_injected_text(text)
+}
+
+pub fn undo_last_injected_text() -> Result<(), String> {
+    platform_impl::undo_last_injected_text()
+}
+
 pub fn remember_input_target() -> Result<(), String> {
     platform_impl::remember_input_target()
 }
@@ -60,6 +72,11 @@ pub fn hide_window(hwnd: isize) -> Result<(), String> {
     platform_impl::hide_window(hwnd)
 }
 
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+pub fn make_window_focusable(hwnd: isize) -> Result<(), String> {
+    platform_impl::make_window_focusable(hwnd)
+}
+
 #[cfg(all(feature = "desktop", not(target_os = "windows")))]
 pub fn configure_no_activate_window(_hwnd: isize) -> Result<(), String> {
     Ok(())
@@ -72,6 +89,11 @@ pub fn show_no_activate_window(_hwnd: isize) -> Result<(), String> {
 
 #[cfg(all(feature = "desktop", not(target_os = "windows")))]
 pub fn hide_window(_hwnd: isize) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(all(feature = "desktop", not(target_os = "windows")))]
+pub fn make_window_focusable(_hwnd: isize) -> Result<(), String> {
     Ok(())
 }
 
@@ -241,6 +263,34 @@ mod platform_impl {
             }
         }
         paste_result
+    }
+
+    pub fn replace_last_injected_text(text: &str) -> Result<(), String> {
+        eprintln!(
+            "[saynow] replacing last injected text; chars={}",
+            text.chars().count()
+        );
+        restore_input_target_for_edit("无法恢复输入目标窗口，纠错已保存但未替换文本。")?;
+        undo_last_action()?;
+        thread::sleep(PASTE_COMPLETION_DELAY);
+        inject_text(text)
+    }
+
+    pub fn undo_last_injected_text() -> Result<(), String> {
+        eprintln!("[saynow] undoing last injected text");
+        restore_input_target_for_edit("无法恢复输入目标窗口，未撤销刚才插入的文本。")?;
+        undo_last_action()
+    }
+
+    fn restore_input_target_for_edit(error_message: &str) -> Result<(), String> {
+        let target_restored = restore_input_target_internal()?;
+        if !target_restored {
+            return Err(error_message.to_string());
+        }
+        thread::sleep(INPUT_TARGET_SETTLE_DELAY);
+        release_all_modifiers();
+        thread::sleep(KEY_CHORD_DELAY);
+        Ok(())
     }
 
     pub fn remember_input_target() -> Result<(), String> {
@@ -1050,12 +1100,32 @@ mod platform_impl {
         Ok(())
     }
 
+    pub fn make_window_focusable(hwnd_value: isize) -> Result<(), String> {
+        let hwnd = valid_hwnd(hwnd_value)?;
+        let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        let next_style = (style & !(WS_EX_NOACTIVATE.0 as isize)) | WS_EX_TOOLWINDOW.0 as isize;
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next_style);
+        }
+        Ok(())
+    }
+
     fn paste_from_clipboard() -> Result<(), String> {
         send_key_down(VK_CONTROL)?;
         thread::sleep(KEY_CHORD_DELAY);
         send_key_down(VK_V)?;
         thread::sleep(KEY_CHORD_DELAY);
         send_key_up(VK_V)?;
+        thread::sleep(KEY_CHORD_DELAY);
+        send_key_up(VK_CONTROL)
+    }
+
+    fn undo_last_action() -> Result<(), String> {
+        send_key_down(VK_CONTROL)?;
+        thread::sleep(KEY_CHORD_DELAY);
+        send_key_down(VIRTUAL_KEY(0x5A))?;
+        thread::sleep(KEY_CHORD_DELAY);
+        send_key_up(VIRTUAL_KEY(0x5A))?;
         thread::sleep(KEY_CHORD_DELAY);
         send_key_up(VK_CONTROL)
     }
@@ -1448,6 +1518,14 @@ mod platform_impl {
 
     pub fn inject_text(_text: &str) -> Result<(), String> {
         Err("当前环境不是 Windows，无法执行文本注入；识别文本已保存在记录中。".to_string())
+    }
+
+    pub fn replace_last_injected_text(_text: &str) -> Result<(), String> {
+        Err("当前环境不是 Windows，无法替换刚才插入的文本。".to_string())
+    }
+
+    pub fn undo_last_injected_text() -> Result<(), String> {
+        Err("当前环境不是 Windows，无法撤销刚才插入的文本。".to_string())
     }
 
     pub fn remember_input_target() -> Result<(), String> {

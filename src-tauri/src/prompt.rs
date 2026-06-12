@@ -1,4 +1,6 @@
-use crate::models::{RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem};
+use crate::models::{
+    LearningRule, RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
+};
 
 const FORMAT_EXAMPLE: &str =
     "格式示例：将“上周三，也就是六月三号，我上午九点零五分参加了第二次产品评审，讨论了三个方案、十二条反馈和百分之十五的预算调整。下午，我把Meeting Notes发给了Alice，晚上八点半又确认了一遍OKR”输出为“上周三，也就是6月3号，我上午9:05参加了第2次产品评审，讨论了3个方案、12条反馈和15%的预算调整。下午，我把Meeting Notes发给了Alice，晚上8:30又确认了一遍OKR”。";
@@ -10,6 +12,7 @@ pub fn build_prompt_context(
     vocabulary: &[VocabularyItem],
     styles: &[StylePrompt],
     records: &[RecognitionRecord],
+    learning_rules: &[LearningRule],
 ) -> String {
     let words = vocabulary
         .iter()
@@ -40,6 +43,17 @@ pub fn build_prompt_context(
         .map(|record| format!("- {}", record.text.trim()))
         .collect::<Vec<_>>()
         .join("\n");
+    let learned_preferences = learning_rules
+        .iter()
+        .filter(|rule| {
+            matches!(rule.status.as_str(), "candidate" | "active" | "pinned")
+                && rule.risk != "high"
+                && !rule.description.trim().is_empty()
+        })
+        .take(12)
+        .map(format_learning_rule)
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut sections = vec![
         "你是一个桌面端语音识别助手。只输出最终识别文本，不输出解释。".to_string(),
@@ -55,8 +69,26 @@ pub fn build_prompt_context(
     if !history.is_empty() {
         sections.push(format!("相关历史：\n{}", history));
     }
+    if !learned_preferences.is_empty() {
+        sections.push(format!("用户个性化识别偏好：\n{}", learned_preferences));
+    }
 
     sections.join("\n\n")
+}
+
+fn format_learning_rule(rule: &LearningRule) -> String {
+    let mut text = format!("- {}", rule.description.trim());
+    if !rule.match_hints.trim().is_empty() {
+        text.push_str(&format!(" 上下文提示：{}。", rule.match_hints.trim()));
+    }
+    if !rule.from_text.trim().is_empty() || !rule.to_text.trim().is_empty() {
+        text.push_str(&format!(
+            " 倾向：{} -> {}。",
+            rule.from_text.trim(),
+            rule.to_text.trim()
+        ));
+    }
+    text
 }
 
 #[cfg(test)]
@@ -100,6 +132,20 @@ mod tests {
                 status: RecognitionStatus::Success,
                 error_message: None,
             }],
+            &[LearningRule {
+                id: 1,
+                created_at: "2026-06-12T00:00:00Z".to_string(),
+                updated_at: "2026-06-12T00:00:00Z".to_string(),
+                rule_type: "numeric_context".to_string(),
+                description: "在 status 附近，一更可能表示数字 1。".to_string(),
+                match_hints: "status".to_string(),
+                from_text: "一".to_string(),
+                to_text: "1".to_string(),
+                confidence: 0.8,
+                status: "candidate".to_string(),
+                evidence_correction_ids: "1,2".to_string(),
+                risk: "medium".to_string(),
+            }],
         );
 
         assert!(prompt.contains("Kunlun"));
@@ -122,6 +168,8 @@ mod tests {
         assert!(prompt.contains("嗯，我觉得这个方案吧"));
         assert!(prompt.contains("还挺顺的"));
         assert!(prompt.contains("昨天讨论 Kunlun"));
+        assert!(prompt.contains("用户个性化识别偏好"));
+        assert!(prompt.contains("status 附近"));
         assert!(!prompt.contains("disabled"));
     }
 }

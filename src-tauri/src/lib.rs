@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod db;
+pub mod learning;
 pub mod models;
 pub mod platform;
 pub mod prompt;
@@ -194,7 +195,7 @@ fn create_recorder_window<R: tauri::Runtime>(
     .skip_taskbar(true)
     .visible(false)
     .focused(false)
-    .focusable(false)
+    .focusable(true)
     .transparent(true)
     .shadow(false)
     .build()?;

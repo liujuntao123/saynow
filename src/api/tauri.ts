@@ -1,10 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AppConfig,
+  CorrectionRecord,
   DashboardData,
+  LearningRule,
+  LearningEngineConfig,
   PersonalizationPreferences,
   ProviderConfig,
   RecognitionRecord,
+  SaveCorrectionInput,
   StylePrompt,
   VocabularyItem,
 } from '../types';
@@ -12,6 +16,8 @@ import type {
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 const localPreviewRecords: RecognitionRecord[] = [];
+const localPreviewCorrections: CorrectionRecord[] = [];
+const localPreviewLearningRules: LearningRule[] = [];
 
 let localPreviewConfig: AppConfig = {
   provider: '',
@@ -31,6 +37,17 @@ let nextLocalPreviewStyleId = Date.now();
 
 let localPreviewPersonalizationPreferences: PersonalizationPreferences = {
   removeTrailingPeriod: false,
+};
+
+let localPreviewLearningEngineConfig: LearningEngineConfig = {
+  enabled: false,
+  provider: '',
+  baseUrl: '',
+  model: '',
+  apiKeyRef: '',
+  runMode: 'llmAssist',
+  minNewCorrections: 5,
+  idleSeconds: 30,
 };
 
 function localPreviewStats() {
@@ -113,6 +130,43 @@ export async function listRecords(): Promise<RecognitionRecord[]> {
   return localPreviewRecords;
 }
 
+export async function listCorrectionRecords(): Promise<CorrectionRecord[]> {
+  if (isTauri) return invoke('list_correction_records');
+  return localPreviewCorrections;
+}
+
+export async function saveCorrection(input: SaveCorrectionInput): Promise<CorrectionRecord> {
+  if (isTauri) return invoke('save_correction', { input });
+  const record: CorrectionRecord = {
+    id: Date.now(),
+    createdAt: new Date().toISOString(),
+    recognitionRecordId: input.recognitionRecordId,
+    rawText: input.rawText,
+    correctedText: input.correctedText,
+    source: input.source,
+    applied: false,
+    errorMessage: '浏览器预览模式不支持替换目标应用文本。',
+    learningProcessedAt: null,
+  };
+  localPreviewCorrections.unshift(record);
+  return record;
+}
+
+export async function listLearningRules(): Promise<LearningRule[]> {
+  if (isTauri) return invoke('list_learning_rules');
+  return localPreviewLearningRules;
+}
+
+export async function refreshLearningRules(): Promise<LearningRule[]> {
+  if (isTauri) return invoke('refresh_learning_rules');
+  return localPreviewLearningRules;
+}
+
+export async function runLearningEngine(force: boolean): Promise<LearningRule[]> {
+  if (isTauri) return invoke('run_learning_engine', { force });
+  return localPreviewLearningRules;
+}
+
 export async function listVocabulary(): Promise<VocabularyItem[]> {
   if (isTauri) return invoke('list_vocabulary');
   return localPreviewVocabulary;
@@ -178,6 +232,17 @@ export async function savePersonalizationPreferences(
   return localPreviewPersonalizationPreferences;
 }
 
+export async function getLearningEngineConfig(): Promise<LearningEngineConfig> {
+  if (isTauri) return invoke('get_learning_engine_config');
+  return localPreviewLearningEngineConfig;
+}
+
+export async function saveLearningEngineConfig(config: LearningEngineConfig): Promise<LearningEngineConfig> {
+  if (isTauri) return invoke('save_learning_engine_config', { config });
+  localPreviewLearningEngineConfig = config;
+  return localPreviewLearningEngineConfig;
+}
+
 function normalizeStylePrompts(items: StylePrompt[], activeId?: number): StylePrompt[] {
   const fallbackActiveId = activeId ?? items.find((item) => item.enabled)?.id;
   return items.map((item) => ({
@@ -211,6 +276,10 @@ export async function showRecorderOverlayNoActivate(): Promise<void> {
   if (isTauri) return invoke('show_recorder_overlay_no_activate');
 }
 
+export async function showRecorderOverlayFocus(): Promise<void> {
+  if (isTauri) return invoke('show_recorder_overlay_focus');
+}
+
 export async function hideRecorderOverlayWindow(): Promise<void> {
   if (isTauri) return invoke('hide_recorder_overlay');
 }
@@ -219,10 +288,18 @@ export async function setRecorderOverlayPosition(x: number, y: number): Promise<
   if (isTauri) return invoke('set_recorder_overlay_position', { x, y });
 }
 
+export async function setRecorderOverlaySize(width: number, height: number): Promise<void> {
+  if (isTauri) return invoke('set_recorder_overlay_size', { width, height });
+}
+
 export async function setHotkeyMonitor(parts: string[] | null): Promise<void> {
   if (isTauri) return invoke('set_hotkey_monitor', { parts });
 }
 
 export async function restoreInputTarget(): Promise<void> {
   if (isTauri) return invoke('restore_input_target');
+}
+
+export async function undoLastInjectedText(): Promise<void> {
+  if (isTauri) return invoke('undo_last_injected_text');
 }

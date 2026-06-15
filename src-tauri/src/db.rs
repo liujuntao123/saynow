@@ -95,7 +95,8 @@ impl AppDb {
                 provider TEXT NOT NULL,
                 model TEXT NOT NULL,
                 status TEXT NOT NULL,
-                error_message TEXT
+                error_message TEXT,
+                learning_processed_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS vocabulary (
@@ -143,6 +144,7 @@ impl AppDb {
                 confidence REAL NOT NULL,
                 status TEXT NOT NULL,
                 evidence_correction_ids TEXT NOT NULL,
+                evidence_recognition_ids TEXT NOT NULL DEFAULT '',
                 risk TEXT NOT NULL DEFAULT 'medium',
                 UNIQUE(rule_type, match_hints, from_text, to_text)
             );
@@ -162,6 +164,12 @@ impl AppDb {
         )?;
         Self::add_column_if_missing(
             &conn,
+            "recognition_records",
+            "learning_processed_at",
+            "learning_processed_at TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
             "correction_records",
             "learning_processed_at",
             "learning_processed_at TEXT",
@@ -171,6 +179,12 @@ impl AppDb {
             "learning_rules",
             "risk",
             "risk TEXT NOT NULL DEFAULT 'medium'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "learning_rules",
+            "evidence_recognition_ids",
+            "evidence_recognition_ids TEXT NOT NULL DEFAULT ''",
         )?;
         Ok(())
     }
@@ -363,26 +377,50 @@ impl AppDb {
     pub fn list_records(&self, limit: usize) -> Result<Vec<RecognitionRecord>> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, created_at, duration_seconds, text, provider, model, status, error_message FROM recognition_records ORDER BY id DESC LIMIT ?1",
+            "SELECT id, created_at, duration_seconds, text, provider, model, status, error_message, learning_processed_at FROM recognition_records ORDER BY id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map([limit as i64], |row| {
-            let status_text: String = row.get(6)?;
-            Ok(RecognitionRecord {
-                id: row.get(0)?,
-                created_at: row.get(1)?,
-                duration_seconds: row.get::<_, i64>(2)? as u32,
-                text: row.get(3)?,
-                provider: row.get(4)?,
-                model: row.get(5)?,
-                status: match status_text.as_str() {
-                    "success" => RecognitionStatus::Success,
-                    "processing" => RecognitionStatus::Processing,
-                    _ => RecognitionStatus::Failed,
-                },
-                error_message: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map([limit as i64], Self::recognition_record_from_row)?;
         rows.collect()
+    }
+
+    pub fn list_unprocessed_recognition_records(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RecognitionRecord>> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, created_at, duration_seconds, text, provider, model, status, error_message, learning_processed_at
+            FROM recognition_records
+            WHERE learning_processed_at IS NULL
+                AND status = 'success'
+                AND TRIM(text) != ''
+                AND LENGTH(TRIM(text)) >= 4
+            ORDER BY id ASC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = stmt.query_map([limit as i64], Self::recognition_record_from_row)?;
+        rows.collect()
+    }
+
+    pub fn mark_recognition_records_learning_processed(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let processed_at = Utc::now().to_rfc3339();
+        let mut conn = self.conn.lock().expect("database mutex poisoned");
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE recognition_records SET learning_processed_at = ?1 WHERE id = ?2",
+            )?;
+            for id in ids {
+                stmt.execute(params![processed_at, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn insert_correction_record(
@@ -512,14 +550,15 @@ impl AppDb {
         conn.execute(
             r#"
             INSERT INTO learning_rules
-                (created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                (created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, evidence_recognition_ids, risk)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(rule_type, match_hints, from_text, to_text) DO UPDATE SET
                 updated_at = excluded.updated_at,
                 description = excluded.description,
                 confidence = excluded.confidence,
                 status = excluded.status,
                 evidence_correction_ids = excluded.evidence_correction_ids,
+                evidence_recognition_ids = excluded.evidence_recognition_ids,
                 risk = excluded.risk
             "#,
             params![
@@ -533,12 +572,13 @@ impl AppDb {
                 rule.confidence,
                 rule.status,
                 rule.evidence_correction_ids,
+                rule.evidence_recognition_ids,
                 rule.risk
             ],
         )?;
         conn.query_row(
             r#"
-            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk
+            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, evidence_recognition_ids, risk
             FROM learning_rules
             WHERE rule_type = ?1 AND match_hints = ?2 AND from_text = ?3 AND to_text = ?4
             "#,
@@ -557,7 +597,7 @@ impl AppDb {
         let conn = self.conn.lock().expect("database mutex poisoned");
         conn.query_row(
             r#"
-            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk
+            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, evidence_recognition_ids, risk
             FROM learning_rules
             WHERE rule_type = ?1 AND match_hints = ?2 AND from_text = ?3 AND to_text = ?4
             "#,
@@ -570,7 +610,7 @@ impl AppDb {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut stmt = conn.prepare(
             r#"
-            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, risk
+            SELECT id, created_at, updated_at, rule_type, description, match_hints, from_text, to_text, confidence, status, evidence_correction_ids, evidence_recognition_ids, risk
             FROM learning_rules
             ORDER BY updated_at DESC, id DESC
             LIMIT ?1
@@ -578,6 +618,25 @@ impl AppDb {
         )?;
         let rows = stmt.query_map([limit as i64], Self::learning_rule_from_row)?;
         rows.collect()
+    }
+
+    fn recognition_record_from_row(row: &Row<'_>) -> Result<RecognitionRecord> {
+        let status_text: String = row.get(6)?;
+        Ok(RecognitionRecord {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            duration_seconds: row.get::<_, i64>(2)? as u32,
+            text: row.get(3)?,
+            provider: row.get(4)?,
+            model: row.get(5)?,
+            status: match status_text.as_str() {
+                "success" => RecognitionStatus::Success,
+                "processing" => RecognitionStatus::Processing,
+                _ => RecognitionStatus::Failed,
+            },
+            error_message: row.get(7)?,
+            learning_processed_at: row.get(8)?,
+        })
     }
 
     fn learning_rule_from_row(row: &Row<'_>) -> Result<LearningRule> {
@@ -593,7 +652,8 @@ impl AppDb {
             confidence: row.get(8)?,
             status: row.get(9)?,
             evidence_correction_ids: row.get(10)?,
-            risk: row.get(11)?,
+            evidence_recognition_ids: row.get(11)?,
+            risk: row.get(12)?,
         })
     }
 
@@ -1072,6 +1132,28 @@ mod tests {
         assert_eq!(db.list_records(10).unwrap()[0].text, "识别文本");
         assert_eq!(db.list_vocabulary().unwrap()[0].term, "Qwen");
         assert_eq!(db.list_style_prompts().unwrap()[0].name, "书面语");
+    }
+
+    #[test]
+    fn tracks_unprocessed_recognition_records_for_learning() {
+        let db = AppDb::in_memory().unwrap();
+
+        db.insert_record("payload 字段今天又讨论了一次", 8, RecognitionStatus::Success)
+            .unwrap();
+        db.insert_record("", 1, RecognitionStatus::Success).unwrap();
+        db.insert_record("失败记录", 1, RecognitionStatus::Failed)
+            .unwrap();
+
+        let records = db.list_unprocessed_recognition_records(10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].text, "payload 字段今天又讨论了一次");
+        assert!(records[0].learning_processed_at.is_none());
+
+        db.mark_recognition_records_learning_processed(&[records[0].id])
+            .unwrap();
+
+        assert!(db.list_unprocessed_recognition_records(10).unwrap().is_empty());
+        assert!(db.list_records(10).unwrap()[2].learning_processed_at.is_some());
     }
 
     #[test]

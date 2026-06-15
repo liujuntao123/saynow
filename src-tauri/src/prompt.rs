@@ -131,6 +131,7 @@ mod tests {
                 model: "mimo-v2.5".to_string(),
                 status: RecognitionStatus::Success,
                 error_message: None,
+                learning_processed_at: None,
             }],
             &[LearningRule {
                 id: 1,
@@ -144,6 +145,7 @@ mod tests {
                 confidence: 0.8,
                 status: "candidate".to_string(),
                 evidence_correction_ids: "1,2".to_string(),
+                evidence_recognition_ids: String::new(),
                 risk: "medium".to_string(),
             }],
         );

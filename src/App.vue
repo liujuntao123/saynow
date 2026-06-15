@@ -244,6 +244,7 @@ async function beginRecording(triggeredAt: number) {
 
 async function finishRecording() {
   busy.value = true;
+  let shouldScheduleLearning = false;
   try {
     await recordingStartPromise;
     recordingStartPromise = null;
@@ -255,6 +256,7 @@ async function finishRecording() {
       debugLog('recognition finished', { id: record.id, status: record.status, textLength: record.text.length, error: record.errorMessage });
       await refreshAll();
       if (record.status === 'success' && record.text.trim()) {
+        shouldScheduleLearning = true;
         await showCorrectionPrompt(record);
       }
     }
@@ -269,6 +271,9 @@ async function finishRecording() {
   } finally {
     busy.value = false;
     recordingStartPromise = null;
+  }
+  if (shouldScheduleLearning) {
+    scheduleLearningEngineRun();
   }
   if (!correctionPromptTimer) {
     await hideRecorderOverlay();
@@ -555,7 +560,7 @@ function scheduleLearningEngineRun() {
   const delayMs = Math.max(5, learningConfig.idleSeconds || 30) * 1000;
   debugLog('learning engine scheduled', {
     delayMs,
-    minNewCorrections: learningConfig.minNewCorrections,
+    minNewSamples: learningConfig.minNewCorrections,
     mode: learningConfig.runMode,
   });
   learningEngineIdleTimer = window.setTimeout(() => {

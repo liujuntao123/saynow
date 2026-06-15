@@ -119,7 +119,7 @@ pub fn run_learning_engine_data(db: &AppDb, force: bool) -> Result<Vec<LearningR
         .get_learning_engine_config()
         .map_err(|error| error.to_string())?;
     eprintln!(
-        "[saynow] learning engine requested; enabled={} mode={} force={} min_new_corrections={}",
+        "[saynow] learning engine requested; enabled={} mode={} force={} min_new_samples={}",
         config.enabled, config.run_mode, force, config.min_new_corrections
     );
     if !config.enabled && !force {
@@ -128,15 +128,22 @@ pub fn run_learning_engine_data(db: &AppDb, force: bool) -> Result<Vec<LearningR
     }
 
     let limit = config.min_new_corrections.max(1) as usize;
+    let correction_limit = if force { 200 } else { limit };
+    let recognition_limit = if force { 120 } else { (limit * 4).max(20) };
     let corrections = db
-        .list_unprocessed_correction_records(if force { 200 } else { limit })
+        .list_unprocessed_correction_records(correction_limit)
+        .map_err(|error| error.to_string())?;
+    let recognition_history = db
+        .list_unprocessed_recognition_records(recognition_limit)
         .map_err(|error| error.to_string())?;
     eprintln!(
-        "[saynow] learning engine loaded corrections; count={}",
-        corrections.len()
+        "[saynow] learning engine loaded samples; corrections={} recognition_history={}",
+        corrections.len(),
+        recognition_history.len()
     );
-    if corrections.is_empty() || (!force && corrections.len() < limit) {
-        eprintln!("[saynow] learning engine skipped: insufficient corrections");
+    let sample_count = corrections.len() + recognition_history.len();
+    if sample_count == 0 || (!force && sample_count < limit) {
+        eprintln!("[saynow] learning engine skipped: insufficient samples");
         return list_learning_rules_data(db);
     }
 
@@ -147,6 +154,7 @@ pub fn run_learning_engine_data(db: &AppDb, force: bool) -> Result<Vec<LearningR
         run_llm_learning(
             &config,
             &corrections,
+            &recognition_history,
             &db.list_learning_rules(50)
                 .map_err(|error| error.to_string())?,
         )?
@@ -158,8 +166,13 @@ pub fn run_learning_engine_data(db: &AppDb, force: bool) -> Result<Vec<LearningR
     );
     for rule in &rules {
         eprintln!(
-            "[saynow] learning rule upsert; type={} status={} risk={} confidence={} evidence={}",
-            rule.rule_type, rule.status, rule.risk, rule.confidence, rule.evidence_correction_ids
+            "[saynow] learning rule upsert; type={} status={} risk={} confidence={} correction_evidence={} recognition_evidence={}",
+            rule.rule_type,
+            rule.status,
+            rule.risk,
+            rule.confidence,
+            rule.evidence_correction_ids,
+            rule.evidence_recognition_ids
         );
         db.upsert_learning_rule(rule)
             .map_err(|error| error.to_string())?;
@@ -170,24 +183,37 @@ pub fn run_learning_engine_data(db: &AppDb, force: bool) -> Result<Vec<LearningR
         .collect::<Vec<_>>();
     db.mark_corrections_learning_processed(&ids)
         .map_err(|error| error.to_string())?;
+    let recognition_ids = recognition_history
+        .iter()
+        .map(|record| record.id)
+        .collect::<Vec<_>>();
+    db.mark_recognition_records_learning_processed(&recognition_ids)
+        .map_err(|error| error.to_string())?;
     list_learning_rules_data(db)
 }
 
 fn run_llm_learning(
     config: &LearningEngineConfig,
     corrections: &[CorrectionRecord],
+    recognition_history: &[RecognitionRecord],
     existing_rules: &[LearningRule],
 ) -> Result<Vec<LearningRule>, String> {
     if !config.has_complete_provider() {
         return Err("学习引擎 LLM 配置不完整。".to_string());
     }
     let api_key = resolve_api_key(&config.api_key_ref)?;
-    let payload = build_llm_learning_payload(&config.model, corrections, existing_rules);
+    let payload = build_llm_learning_payload(
+        &config.model,
+        corrections,
+        recognition_history,
+        existing_rules,
+    );
     eprintln!(
-        "[saynow] learning engine sending LLM request; provider={} model={} corrections={} payload_chars={}",
+        "[saynow] learning engine sending LLM request; provider={} model={} corrections={} recognition_history={} payload_chars={}",
         config.provider,
         config.model,
         corrections.len(),
+        recognition_history.len(),
         payload.to_string().chars().count()
     );
     let url = format!(
@@ -1126,7 +1152,36 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].status, "candidate");
         assert_eq!(rules[0].evidence_correction_ids, "1,2");
+        assert_eq!(rules[0].evidence_recognition_ids, "");
         assert!(rules[0].confidence > 0.7);
+    }
+
+    #[test]
+    fn learning_engine_processes_successful_recognition_history_samples() {
+        let db = AppDb::in_memory().unwrap();
+        save_learning_engine_config_data(
+            &db,
+            LearningEngineConfig {
+                enabled: true,
+                run_mode: "localOnly".to_string(),
+                min_new_corrections: 3,
+                ..LearningEngineConfig::default()
+            },
+        )
+        .unwrap();
+
+        for text in [
+            "今天继续讨论 payload 字段的解析逻辑",
+            "payload 里面的 status 还是要单独处理",
+            "这个 payload 转换和 status 校验再看一下",
+        ] {
+            db.insert_record(text, 8, RecognitionStatus::Success).unwrap();
+        }
+
+        run_learning_engine_data(&db, false).unwrap();
+
+        assert!(db.list_unprocessed_recognition_records(10).unwrap().is_empty());
+        assert!(list_learning_rules_data(&db).unwrap().is_empty());
     }
 
     #[test]

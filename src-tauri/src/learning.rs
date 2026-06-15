@@ -4,7 +4,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::models::{CorrectionRecord, LearningRule};
+use crate::models::{CorrectionRecord, LearningRule, RecognitionRecord};
 
 const TECH_HINTS: [&str; 12] = [
     "status", "code", "id", "type", "value", "props", "payload", "token", "api", "http", "json",
@@ -39,6 +39,7 @@ pub fn extract_learning_rules(corrections: &[CorrectionRecord]) -> Vec<LearningR
 pub fn build_llm_learning_payload(
     model: &str,
     corrections: &[CorrectionRecord],
+    recognition_history: &[RecognitionRecord],
     existing_rules: &[LearningRule],
 ) -> Value {
     json!({
@@ -51,15 +52,16 @@ pub fn build_llm_learning_payload(
             {
                 "role": "user",
                 "content": json!({
-                    "task": "extract_personal_speech_correction_rules",
+                    "task": "extract_personal_speech_learning_rules",
                     "locale": "zh-CN",
                     "corrections": corrections.iter().map(correction_to_json).collect::<Vec<_>>(),
+                    "recognitionHistory": recognition_history.iter().map(recognition_to_json).collect::<Vec<_>>(),
                     "existingRules": existing_rules.iter().take(30).map(rule_to_json).collect::<Vec<_>>()
                 }).to_string()
             }
         ],
         "temperature": 0.1,
-        "max_completion_tokens": 1200,
+        "max_completion_tokens": 1600,
         "stream": false,
         "response_format": { "type": "json_object" }
     })
@@ -78,20 +80,25 @@ pub fn parse_llm_learning_rules(response_text: &str) -> Result<Vec<LearningRule>
 }
 
 fn learning_system_prompt() -> &'static str {
-    r#"你是桌面端语音输入助手的个性化学习引擎。你的任务是从用户明确纠错对中提取稳定、低噪声、可审阅的语音识别偏好规则。
+    r#"你是桌面端语音输入助手的个性化学习引擎。你的任务是从两类数据中提取稳定、低噪声、可审阅的语音识别偏好规则：
+1. corrections：用户明确纠错对，是强信号。
+2. recognitionHistory：用户成功识别历史，是弱信号，只能用于发现重复出现的常用词汇、短语、技术术语和语言习惯。
 
 要求：
-- 只学习识别纠错，不学习用户改写、扩写、换表达。
-- 不保存完整敏感句子，只输出抽象规则。
+- 纠错对可学习“识别错了什么、用户改成什么”。
+- 历史识别不能从单条文本生成规则，至少需要 3 条历史证据，或与纠错证据共同支持。
+- 历史识别只学习对后续语音识别真正有帮助的内容，例如常用专有名词、英文缩写、技术字段、口头表达偏好、标点/格式习惯。
+- 不学习用户事实、身份信息、完整句子、一次性话题、敏感内容、任务内容或私人信息。
+- 不保存完整敏感句子，只输出抽象规则或短词短语。
 - 高风险规则必须标记 high，不要把它们设为 active。
-- 同类证据少于 2 条时 status 用 observed；2 条及以上可用 candidate。
+- 只有纠错证据达到 2 条，或历史证据达到 3 条，才可用 candidate；否则 status 用 observed。
 - 输出严格 JSON，不要解释。
 
 JSON schema:
 {
   "rules": [
     {
-      "type": "numeric_context | preferred_term | symbol_rule | negative_rule | formatting_rule",
+      "type": "numeric_context | preferred_term | frequent_phrase | language_habit | symbol_rule | negative_rule | formatting_rule",
       "description": "短规则说明",
       "matchHints": ["status", "code"],
       "from": ["一"],
@@ -99,11 +106,13 @@ JSON schema:
       "confidence": 0.0,
       "status": "observed | candidate",
       "risk": "low | medium | high",
-      "evidenceCorrectionIds": [1, 2]
+      "evidenceCorrectionIds": [1, 2],
+      "evidenceRecognitionIds": [10, 11, 12]
     }
   ],
   "ignored": [
-    { "correctionId": 3, "reason": "不是识别纠错" }
+    { "source": "correction", "id": 3, "reason": "不是识别纠错" },
+    { "source": "recognition", "id": 8, "reason": "一次性话题，不适合学习" }
   ]
 }"#
 }
@@ -114,6 +123,15 @@ fn correction_to_json(correction: &CorrectionRecord) -> Value {
         "rawText": correction.raw_text,
         "correctedText": correction.corrected_text,
         "source": correction.source,
+    })
+}
+
+fn recognition_to_json(record: &RecognitionRecord) -> Value {
+    json!({
+        "id": record.id,
+        "text": truncate_for_learning(&record.text, 260),
+        "durationSeconds": record.duration_seconds,
+        "createdAt": record.created_at,
     })
 }
 
@@ -129,27 +147,29 @@ fn rule_to_json(rule: &LearningRule) -> Value {
         "status": rule.status,
         "risk": rule.risk,
         "evidenceCorrectionIds": split_csv(&rule.evidence_correction_ids),
+        "evidenceRecognitionIds": split_csv(&rule.evidence_recognition_ids),
     })
 }
 
 fn model_rule_to_rule(rule: LearningModelRule) -> Option<LearningRule> {
     let rule_type = normalize_rule_type(&rule.rule_type);
     let description = rule.description.trim();
-    let evidence = rule.evidence_correction_ids;
-    if rule_type.is_empty() || description.is_empty() || evidence.is_empty() {
+    if rule_type.is_empty()
+        || description.is_empty()
+        || (rule.evidence_correction_ids.is_empty() && rule.evidence_recognition_ids.is_empty())
+    {
         return None;
     }
     let now = Utc::now().to_rfc3339();
-    let evidence_text = evidence
-        .into_iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let evidence_count = evidence_text
-        .split(',')
-        .filter(|item| !item.trim().is_empty())
-        .count();
-    let status = normalize_status(rule.status.as_deref(), evidence_count);
+    let correction_evidence_text = ids_to_csv(rule.evidence_correction_ids);
+    let recognition_evidence_text = ids_to_csv(rule.evidence_recognition_ids);
+    let correction_evidence_count = evidence_count(&correction_evidence_text);
+    let recognition_evidence_count = evidence_count(&recognition_evidence_text);
+    let status = normalize_status(
+        rule.status.as_deref(),
+        correction_evidence_count,
+        recognition_evidence_count,
+    );
     Some(LearningRule {
         id: 0,
         created_at: now.clone(),
@@ -161,9 +181,25 @@ fn model_rule_to_rule(rule: LearningModelRule) -> Option<LearningRule> {
         to_text: normalize_list(rule.to),
         confidence: rule.confidence.unwrap_or(0.65).clamp(0.0, 1.0),
         status,
-        evidence_correction_ids: evidence_text,
+        evidence_correction_ids: correction_evidence_text,
+        evidence_recognition_ids: recognition_evidence_text,
         risk: normalize_risk(rule.risk.as_deref()),
     })
+}
+
+fn ids_to_csv(ids: Vec<i64>) -> String {
+    ids.into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn evidence_count(text: &str) -> usize {
+    text.split(',')
+        .filter(|item| !item.trim().is_empty())
+        .count()
 }
 
 fn normalize_list(items: Vec<String>) -> String {
@@ -187,15 +223,22 @@ fn split_csv(text: &str) -> Vec<String> {
 fn normalize_rule_type(rule_type: &str) -> String {
     match rule_type.trim() {
         "numeric_context" | "preferred_term" | "symbol_rule" | "negative_rule"
-        | "formatting_rule" => rule_type.trim().to_string(),
+        | "formatting_rule" | "frequent_phrase" | "language_habit" => rule_type.trim().to_string(),
         _ => String::new(),
     }
 }
 
-fn normalize_status(status: Option<&str>, evidence_count: usize) -> String {
+fn normalize_status(
+    status: Option<&str>,
+    correction_evidence_count: usize,
+    recognition_evidence_count: usize,
+) -> String {
+    let enough_for_candidate = correction_evidence_count >= 2
+        || correction_evidence_count + recognition_evidence_count >= 3
+        || recognition_evidence_count >= 3;
     match status.unwrap_or_default().trim() {
-        "candidate" if evidence_count >= 2 => "candidate".to_string(),
-        _ => status_for_count(evidence_count).to_string(),
+        "candidate" if enough_for_candidate => "candidate".to_string(),
+        _ => status_for_evidence(correction_evidence_count, recognition_evidence_count).to_string(),
     }
 }
 
@@ -250,6 +293,17 @@ struct LearningModelRule {
     risk: Option<String>,
     #[serde(default)]
     evidence_correction_ids: Vec<i64>,
+    #[serde(default)]
+    evidence_recognition_ids: Vec<i64>,
+}
+
+fn truncate_for_learning(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let mut output = trimmed.chars().take(max_chars).collect::<String>();
+    if trimmed.chars().count() > max_chars {
+        output.push('…');
+    }
+    output
 }
 
 fn extract_numeric_context_rules(correction: &CorrectionRecord) -> Vec<LearningRule> {
@@ -322,15 +376,23 @@ fn merge_learning_rules(rules: Vec<LearningRule>) -> Vec<LearningRule> {
                 && existing.from_text == rule.from_text
                 && existing.to_text == rule.to_text
         }) {
-            let evidence = merge_evidence_ids(
+            let correction_evidence = merge_evidence_ids(
                 &existing.evidence_correction_ids,
                 &rule.evidence_correction_ids,
             );
-            let count = evidence.split(',').filter(|item| !item.is_empty()).count();
-            existing.evidence_correction_ids = evidence;
-            existing.confidence =
-                confidence_for_count(count, existing.confidence.max(rule.confidence));
-            existing.status = status_for_count(count).to_string();
+            let recognition_evidence = merge_evidence_ids(
+                &existing.evidence_recognition_ids,
+                &rule.evidence_recognition_ids,
+            );
+            let correction_count = evidence_count(&correction_evidence);
+            let recognition_count = evidence_count(&recognition_evidence);
+            existing.evidence_correction_ids = correction_evidence;
+            existing.evidence_recognition_ids = recognition_evidence;
+            existing.confidence = confidence_for_count(
+                correction_count + recognition_count,
+                existing.confidence.max(rule.confidence),
+            );
+            existing.status = status_for_evidence(correction_count, recognition_count).to_string();
         } else {
             merged.push(rule);
         }
@@ -373,6 +435,7 @@ fn new_rule(
         confidence,
         status: "observed".to_string(),
         evidence_correction_ids: correction_id.to_string(),
+        evidence_recognition_ids: String::new(),
         risk: "medium".to_string(),
     }
 }
@@ -381,8 +444,9 @@ fn confidence_for_count(count: usize, base: f64) -> f64 {
     (base + (count.saturating_sub(1) as f64 * 0.12)).min(0.9)
 }
 
-fn status_for_count(count: usize) -> &'static str {
-    if count >= 2 {
+fn status_for_evidence(correction_count: usize, recognition_count: usize) -> &'static str {
+    if correction_count >= 2 || correction_count + recognition_count >= 3 || recognition_count >= 3
+    {
         "candidate"
     } else {
         "observed"
@@ -413,6 +477,20 @@ mod tests {
             corrected_text: corrected_text.to_string(),
             source: "test".to_string(),
             applied: true,
+            error_message: None,
+            learning_processed_at: None,
+        }
+    }
+
+    fn recognition(id: i64, text: &str) -> RecognitionRecord {
+        RecognitionRecord {
+            id,
+            created_at: "2026-06-12T00:00:00Z".to_string(),
+            duration_seconds: 8,
+            text: text.to_string(),
+            provider: "MiMo".to_string(),
+            model: "mimo-v2.5".to_string(),
+            status: crate::models::RecognitionStatus::Success,
             error_message: None,
             learning_processed_at: None,
         }
@@ -470,7 +548,8 @@ mod tests {
       "confidence": 0.82,
       "status": "candidate",
       "risk": "medium",
-      "evidenceCorrectionIds": [1, 2]
+      "evidenceCorrectionIds": [1, 2],
+      "evidenceRecognitionIds": [10, 11, 12]
     }
   ],
   "ignored": []
@@ -485,6 +564,7 @@ mod tests {
         assert_eq!(rules[0].risk, "medium");
         assert_eq!(rules[0].match_hints, "status");
         assert_eq!(rules[0].evidence_correction_ids, "1,2");
+        assert_eq!(rules[0].evidence_recognition_ids, "10,11,12");
     }
 
     #[test]
@@ -492,14 +572,43 @@ mod tests {
         let payload = build_llm_learning_payload(
             "gpt-4.1-mini",
             &[correction(1, "status是一", "status是1")],
+            &[recognition(10, "今天继续看 status 和 payload 的处理逻辑。")],
             &[],
         );
 
         assert_eq!(payload["model"], "gpt-4.1-mini");
         assert_eq!(payload["stream"], false);
-        assert!(payload["messages"][1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("status是一"));
+        let content = payload["messages"][1]["content"].as_str().unwrap();
+        assert!(content.contains("status是一"));
+        assert!(content.contains("recognitionHistory"));
+        assert!(content.contains("payload"));
+    }
+
+    #[test]
+    fn parses_history_only_learning_rule_as_candidate_after_repeated_evidence() {
+        let rules = parse_llm_learning_rules(
+            r#"{
+  "rules": [
+    {
+      "type": "preferred_term",
+      "description": "用户经常提到 payload，应作为常用技术词保留英文形式。",
+      "matchHints": ["payload"],
+      "from": [],
+      "to": ["payload"],
+      "confidence": 0.74,
+      "status": "candidate",
+      "risk": "low",
+      "evidenceCorrectionIds": [],
+      "evidenceRecognitionIds": [10, 11, 12]
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].status, "candidate");
+        assert_eq!(rules[0].evidence_correction_ids, "");
+        assert_eq!(rules[0].evidence_recognition_ids, "10,11,12");
     }
 }

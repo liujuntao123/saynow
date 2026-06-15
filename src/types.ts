@@ -20,6 +20,7 @@ export interface RecognitionRecord {
   model: string;
   status: RecognitionStatus;
   errorMessage?: string | null;
+  learningProcessedAt?: string | null;
 }
 
 export interface CorrectionRecord {
@@ -54,6 +55,7 @@ export interface LearningRule {
   confidence: number;
   status: string;
   evidenceCorrectionIds: string;
+  evidenceRecognitionIds: string;
   risk: string;
 }
 

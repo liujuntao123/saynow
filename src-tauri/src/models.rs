@@ -19,6 +19,7 @@ pub struct RecognitionRecord {
     pub model: String,
     pub status: RecognitionStatus,
     pub error_message: Option<String>,
+    pub learning_processed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +60,7 @@ pub struct LearningRule {
     pub confidence: f64,
     pub status: String,
     pub evidence_correction_ids: String,
+    pub evidence_recognition_ids: String,
     pub risk: String,
 }
 

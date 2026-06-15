@@ -43,6 +43,7 @@ mod tests {
             model: "mimo-v2.5".to_string(),
             status,
             error_message: None,
+            learning_processed_at: None,
         }
     }
 

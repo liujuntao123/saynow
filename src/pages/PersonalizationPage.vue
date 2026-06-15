@@ -83,10 +83,12 @@ function saveLearningEngine() {
 }
 function learningRuleStatusText(status: string) {
   const labels: Record<string, string> = {
+    observed: '观察中',
     candidate: '候选规则',
     active: '已采用',
     pinned: '已固定',
     rejected: '已忽略',
+    disabled: '已停用',
   };
   return labels[status] ?? '待确认';
 }
@@ -99,7 +101,18 @@ function learningRuleRiskText(risk: string) {
   return labels[risk] ?? '风险未知';
 }
 function learningRuleTip(rule: LearningRule) {
-  return `${learningRuleStatusText(rule.status)}：这条规则由学习引擎从纠错记录中整理得出。${learningRuleRiskText(rule.risk)}：表示自动放入识别提示词时的误伤风险。`;
+  return `${learningRuleStatusText(rule.status)}：这条规则由学习引擎从纠错记录或识别历史中整理得出。${learningRuleRiskText(rule.risk)}：表示自动放入识别提示词时的误伤风险。`;
+}
+function countCsvItems(text?: string | null) {
+  return (text ?? '').split(',').map((item) => item.trim()).filter(Boolean).length;
+}
+function learningRuleEvidenceText(rule: LearningRule) {
+  const correctionCount = countCsvItems(rule.evidenceCorrectionIds);
+  const recognitionCount = countCsvItems(rule.evidenceRecognitionIds);
+  if (correctionCount && recognitionCount) return `证据：纠错 ${correctionCount} / 历史 ${recognitionCount}`;
+  if (correctionCount) return `证据：纠错 ${correctionCount}`;
+  if (recognitionCount) return `证据：历史 ${recognitionCount}`;
+  return '';
 }
 </script>
 
@@ -197,7 +210,7 @@ function learningRuleTip(rule: LearningRule) {
     </section>
 
     <section v-if="activeTab === 'features'" class="feature-section art-board feature-grid">
-      <UiPanel class="learning-panel art-card clean-panel" title="学习引擎" meta="LLM 整理纠错" icon="spark">
+      <UiPanel class="learning-panel art-card clean-panel" title="学习引擎" meta="LLM 整理纠错与历史" icon="spark">
         <form class="learning-engine-form" @submit.prevent="saveLearningEngine">
           <button
             type="button"
@@ -207,7 +220,7 @@ function learningRuleTip(rule: LearningRule) {
           >
             <span class="feature-toggle-copy">
               <strong>启用 LLM 学习层</strong>
-              <em>用独立文本模型整理纠错记录，生成可审阅的个性化规则。</em>
+              <em>用独立文本模型整理纠错记录和成功识别历史，生成可审阅的个性化规则。</em>
             </span>
             <span class="ios-switch" :class="{ on: learningEngineForm.enabled }"></span>
           </button>
@@ -226,7 +239,7 @@ function learningRuleTip(rule: LearningRule) {
               API Key <input v-model="learningEngineForm.apiKeyRef" type="password" placeholder="credential-manager:learning" />
             </label>
             <label>
-              触发条数 <input v-model.number="learningEngineForm.minNewCorrections" type="number" min="1" max="100" />
+              触发样本 <input v-model.number="learningEngineForm.minNewCorrections" type="number" min="1" max="100" />
             </label>
             <label>
               空闲秒数 <input v-model.number="learningEngineForm.idleSeconds" type="number" min="5" max="3600" />
@@ -236,7 +249,7 @@ function learningRuleTip(rule: LearningRule) {
           <div class="provider-form-actions form-footer">
             <span class="feature-toggle-copy learning-status">
               <strong>{{ learningEngineForm.enabled ? '已启用' : '未启用' }}</strong>
-              <em>{{ learningEngineForm.enabled ? '保存后，后续整理任务将使用此模型。' : '关闭时只保存纠错记录，不请求学习模型。' }}</em>
+              <em>{{ learningEngineForm.enabled ? '保存后，后续整理任务将使用此模型。' : '关闭时只记录纠错和历史，不请求学习模型。' }}</em>
             </span>
             <button class="primary-button compact-action-button icon-only-button" type="submit" :disabled="saving" title="保存学习引擎">
               <AppIcon :name="saving ? 'activity' : 'save'" />
@@ -280,13 +293,14 @@ function learningRuleTip(rule: LearningRule) {
                 </span>
               </span>
             </div>
-            <p v-if="rule.matchHints || rule.fromText || rule.toText">
+            <p v-if="rule.matchHints || rule.fromText || rule.toText || learningRuleEvidenceText(rule)">
               <span v-if="rule.matchHints">上下文：{{ rule.matchHints }}</span>
               <span v-if="rule.fromText || rule.toText">倾向：{{ rule.fromText || '∅' }} -> {{ rule.toText || '∅' }}</span>
+              <span v-if="learningRuleEvidenceText(rule)">{{ learningRuleEvidenceText(rule) }}</span>
             </p>
           </div>
         </div>
-        <EmptyState v-else icon="database" title="暂无学习规则" description="保存纠错后，可由学习引擎整理为候选规则。" />
+        <EmptyState v-else icon="database" title="暂无学习规则" description="保存纠错或积累识别历史后，可由学习引擎整理为候选规则。" />
       </UiPanel>
 
       <UiPanel class="corrections-panel art-card clean-panel" title="纠错记录" :meta="`${correctionRecords.length} 条`" icon="fileText">

@@ -2,14 +2,12 @@
 
 ## 目标
 
-自学习引擎把用户的高质量纠错记录整理为小而稳定的个性化识别偏好，用于后续识别请求上下文和识别后处理。它不直接把完整历史塞进 prompt，也不把弱观测行为直接当成学习数据。
+自学习引擎把用户的高质量纠错记录和成功识别历史整理为小而稳定的个性化识别偏好，用于后续识别请求上下文和识别后处理。它不直接把完整历史塞进 prompt，也不把单条弱观测行为直接当成稳定规则。
 
-第一阶段只使用明确纠错对：
+当前使用两类输入：
 
-- 原始识别文本 `rawText`
-- 用户确认后的 `correctedText`
-- 纠错来源 `source`
-- 是否成功替换回目标输入框 `applied`
+- 明确纠错对：`rawText -> correctedText`，属于强信号。
+- 成功识别历史：用户真实说过且已上屏的文本，属于弱信号。
 
 ## 数据分层
 
@@ -25,7 +23,20 @@
 
 ### 弱信号
 
-弱信号只用于调整交互策略，不直接生成学习规则：
+弱信号可以参与学习，但必须保守处理。单条历史不生成规则，至少需要多条重复证据，且只能学习对语音识别有帮助的内容：
+
+- 常用专有名词、英文缩写、技术字段。
+- 高频短语或固定说法。
+- 口头表达偏好。
+- 标点、数字、格式习惯。
+
+以下内容不得学习为规则：
+
+- 用户身份、隐私、事实信息。
+- 完整句子和一次性话题。
+- 敏感内容、任务内容或具体业务细节。
+
+其他弱观测仍只用于调整交互策略：
 
 - 上屏后短时间内频繁 Backspace/Delete。
 - 用户立刻撤销刚才插入。
@@ -38,16 +49,17 @@
 
 自学习不应阻塞语音输入主链路。建议使用后台批处理：
 
-1. 每新增 5 条有效纠错记录后触发一次轻量整理。
-2. 应用空闲 30 秒后，如果有未处理纠错，触发整理。
+1. 每新增 5 条有效学习样本后触发一次轻量整理。学习样本包括未处理纠错和未处理成功识别历史。
+2. 应用空闲 30 秒后，如果有未处理样本，触发整理。
 3. 每天首次启动时，对最近未处理记录做一次补偿整理。
 4. 用户在设置页点击“整理个性化规则”时手动触发。
 
 整理任务要有去重和节流：
 
-- 同一批纠错只处理一次。
-- 单次最多处理最近 20 条未处理纠错。
-- 超过 30 天或已提炼为稳定规则的原始纠错可只保留摘要。
+- 同一批纠错和历史只处理一次。
+- 单次最多处理最近 200 条未处理纠错和 120 条未处理识别历史。
+- 历史文本进入模型前会做长度截断，避免把大段原文长期传播。
+- 超过 30 天或已提炼为稳定规则的原始样本可只保留摘要。
 
 ## 大模型输入
 
@@ -56,7 +68,7 @@
 ```json
 {
   "locale": "zh-CN",
-  "task": "extract_personal_speech_correction_rules",
+  "task": "extract_personal_speech_learning_rules",
   "existingRules": [
     {
       "id": 12,
@@ -72,6 +84,13 @@
       "rawText": "status不应该会是一吧",
       "correctedText": "status不应该会是1吧",
       "source": "post-insert-overlay"
+    }
+  ],
+  "recognitionHistory": [
+    {
+      "id": 201,
+      "text": "今天继续看 payload 和 status 的处理逻辑",
+      "durationSeconds": 8
     }
   ]
 }
@@ -100,21 +119,25 @@
       "to": ["1", "2", "3"],
       "confidence": 0.78,
       "evidenceCorrectionIds": [101],
+      "evidenceRecognitionIds": [],
       "risk": "medium"
-    }
-  ],
-  "vocabularyCandidates": [
+    },
     {
-      "term": "status",
-      "aliases": ["状态"],
-      "category": "code",
-      "confidence": 0.86,
-      "evidenceCorrectionIds": [101]
+      "type": "preferred_term",
+      "description": "用户经常提到 payload，应作为常用技术词保留英文形式。",
+      "matchHints": ["payload"],
+      "from": [],
+      "to": ["payload"],
+      "confidence": 0.74,
+      "evidenceCorrectionIds": [],
+      "evidenceRecognitionIds": [201, 202, 203],
+      "risk": "low"
     }
   ],
   "ignored": [
     {
-      "correctionId": 102,
+      "source": "correction",
+      "id": 102,
       "reason": "用户重写了句子，不是识别纠错"
     }
   ]
@@ -136,6 +159,8 @@
 晋级建议：
 
 - 同类纠错出现 2 次进入 `candidate`。
+- 只有历史证据时，至少 3 条重复证据才进入 `candidate`。
+- 纠错证据和历史证据可以共同支持同一条规则。
 - 影子评估命中率高且误伤低，进入 `active`。
 - 用户在设置页确认，进入 `pinned`。
 
@@ -174,31 +199,29 @@
 - 支持清空纠错历史和学习规则。
 - 长期保留规则摘要，短期保留原始纠错。
 
-## 第一版落地范围
+## 当前落地范围
 
-本次实现只完成纠错入口和纠错记录采集：
+当前实现已经接通纠错学习和历史学习两条输入：
 
 - 识别成功后直接上屏。
 - 短时间展示“编辑/撤销”轻入口。
 - 用户编辑确认后保存纠错对。
 - 尝试撤销上一条插入并粘贴修正文案。
-
-当前新增的自学习 v0 只保存学习引擎配置和候选规则落点，不影响识别输出：
-
 - `correction_records` 保存明确纠错对。
-- `learning_rules` 保存规则候选。
+- `recognition_records` 保存成功识别历史，并用 `learning_processed_at` 避免重复整理。
+- `learning_rules` 保存候选规则，同时记录纠错证据和历史证据。
 - `learning_engine_config` 保存独立 LLM 配置。
-- 用户可在个性化页配置学习引擎供应商、URL、模型、API Key、触发条数和空闲时间。
+- 用户可在个性化页配置学习引擎供应商、URL、模型、API Key、触发样本和空闲时间。
 - 默认不启用学习引擎，不请求学习模型。
-- `llmAssist` 是主路径：后续由大模型整理纠错记录。
-- `localOnly` 只是可选降级/调试模式，会使用本地启发式生成候选规则。
+- `llmAssist` 是主路径：由大模型整理纠错记录和成功识别历史。
+- `localOnly` 只是内部降级/调试路径，目前只从明确纠错中生成启发式候选。
+- 个性化页展示学习规则和纠错记录，规则状态/风险为中文说明。
 
 后续再新增：
 
 - 更精细的 diff 提取和隐私裁剪。
-- 规则审阅页，目前只能通过日志和数据库查看 learning_rules。
 - 影子评估任务，把 `candidate` 晋级为 `active`。
-- 设置页中的规则审阅和开关。
+- 规则启用、固定、忽略和删除开关。
 
 ## 当前实现行为
 
@@ -206,12 +229,14 @@
 
 1. 用户通过纠错浮窗保存 `rawText -> correctedText`。
 2. 后端写入 `correction_records`。
-3. 如果学习引擎启用，前端按 `idleSeconds` 启动空闲定时器。
-4. 空闲定时器触发后，后端检查未处理纠错条数是否达到 `minNewCorrections`。
-5. 个性化页的“立即整理”按钮会强制运行一次学习任务，跳过触发条数限制。
-6. `llmAssist` 模式会请求配置的 OpenAI-compatible Chat Completions 模型。
-7. 模型返回 JSON 规则，后端解析后写入 `learning_rules`。
-8. 已参与整理的纠错会写入 `learning_processed_at`，避免重复处理。
-9. 后续语音识别会读取 `candidate / active / pinned` 且非 high-risk 的规则，拼入 prompt 的“用户个性化识别偏好”部分。
+3. 每次成功识别会写入 `recognition_records`，并作为弱信号进入待学习队列。
+4. 如果学习引擎启用，前端按 `idleSeconds` 启动空闲定时器。
+5. 空闲定时器触发后，后端检查未处理学习样本数是否达到 `minNewCorrections`。
+6. 学习样本包括未处理纠错和未处理成功识别历史。
+7. 个性化页的“立即整理”按钮会强制运行一次学习任务，跳过触发条数限制。
+8. `llmAssist` 模式会请求配置的 OpenAI-compatible Chat Completions 模型。
+9. 模型返回 JSON 规则，后端解析后写入 `learning_rules`。
+10. 已参与整理的纠错和识别历史会写入 `learning_processed_at`，避免重复处理。
+11. 后续语音识别会读取 `candidate / active / pinned` 且非 high-risk 的规则，拼入 prompt 的“用户个性化识别偏好”部分。
 
 日志前缀统一为 `[saynow] learning engine ...`，用于调试请求触发、批次大小、响应长度和规则落库情况。

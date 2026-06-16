@@ -934,6 +934,11 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub fn remember_input_target() -> Result<(), String> {
+        crate::platform::remember_input_target()
+    }
+
+    #[tauri::command]
     pub fn restore_input_target() -> Result<(), String> {
         crate::platform::restore_input_target()
     }
@@ -978,6 +983,7 @@ mod tauri_commands {
             set_recorder_overlay_position,
             set_recorder_overlay_size,
             set_hotkey_monitor,
+            remember_input_target,
             restore_input_target,
             undo_last_injected_text
         ])

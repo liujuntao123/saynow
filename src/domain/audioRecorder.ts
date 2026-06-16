@@ -94,16 +94,23 @@ export function createAudioRecorder() {
 
       return stopPromise;
     },
+    cancel() {
+      cleanup();
+    },
   };
 
   function cleanup() {
-    stream?.getTracks().forEach((track) => track.stop());
+    stopMediaStream(stream);
     stream = null;
     mediaRecorder = null;
     chunks = [];
     startedAt = 0;
     stopPromise = null;
   }
+}
+
+function stopMediaStream(mediaStream: MediaStream | null) {
+  mediaStream?.getTracks().forEach((track) => track.stop());
 }
 
 async function blobToBase64(blob: Blob): Promise<string> {

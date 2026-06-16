@@ -1,6 +1,6 @@
 [package]
 name = "saynow"
-version = "0.1.27"
+version = "0.1.28"
 description = "saynow Windows speech recognition tool"
 authors = ["saynow"]
 edition = "2021"

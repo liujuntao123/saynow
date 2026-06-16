@@ -18,8 +18,8 @@ import {
   listRecords,
   listStylePrompts,
   listVocabulary,
+  rememberInputTarget,
   recognizeAudio,
-  restoreInputTarget,
   saveConfig,
   saveLearningEngineConfig,
   saveProviderConfig,
@@ -83,7 +83,7 @@ const saving = ref(false);
 const hotkeyRecording = ref(false);
 const configuringHotkey = ref(false);
 const audioRecorder = createAudioRecorder();
-let recordingStartPromise: Promise<void> | null = null;
+let recordingSession: RecordingSession | null = null;
 let unlistenHotkeyState: (() => void) | null = null;
 let recordingGuardTimer: ReturnType<typeof window.setTimeout> | null = null;
 let hotkeyMonitorRetryTimer: ReturnType<typeof window.setTimeout> | null = null;
@@ -101,6 +101,16 @@ const MAX_HOTKEY_RECORDING_MS = 120_000;
 const HOTKEY_MONITOR_RETRY_MS = 1500;
 const HOTKEY_STATE_LISTEN_RETRY_MS = 1500;
 const CORRECTION_PROMPT_TIMEOUT_MS = 4000;
+
+type RecordingPhase = 'starting' | 'recording' | 'stopping';
+
+interface RecordingSession {
+  id: number;
+  phase: RecordingPhase;
+  startedAt: number;
+  startPromise: Promise<void>;
+  stopRequested: boolean;
+}
 
 const currentPage = computed(() => activePage.value);
 const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
@@ -140,24 +150,33 @@ async function refreshAll() {
 }
 
 function startHotkeyRecording() {
-  if (busy.value || hotkeyRecording.value) return;
+  if (busy.value || recordingSession) return;
   debugLog('hotkey pressed; starting recording');
   clearLearningEngineIdleTimer();
   hotkeyRecording.value = true;
   armRecordingGuard();
-  recordingStartPromise = beginRecording(performance.now());
+  const session: RecordingSession = {
+    id: Date.now(),
+    phase: 'starting',
+    startedAt: performance.now(),
+    startPromise: Promise.resolve(),
+    stopRequested: false,
+  };
+  session.startPromise = beginRecording(session);
+  recordingSession = session;
 }
 
 async function stopHotkeyRecording(reason = 'hotkey released') {
-  if (!hotkeyRecording.value) return;
+  const session = recordingSession;
+  if (!session) return;
   debugLog(`${reason}; stopping recording`);
   hotkeyRecording.value = false;
   clearRecordingGuard();
-  await finishRecording();
+  session.stopRequested = true;
+  await finishRecording(session);
 }
 
 async function releaseHotkeyRecording() {
-  await restoreInputTarget().catch((error) => console.error('[saynow] failed to restore input target', error));
   await stopHotkeyRecording();
 }
 
@@ -225,29 +244,45 @@ async function removeProvider(id: number) {
   }
 }
 
-async function beginRecording(triggeredAt: number) {
+async function beginRecording(session: RecordingSession) {
   try {
+    await rememberInputTarget().catch((error) => console.error('[saynow] failed to remember input target', error));
     debugLog('requesting microphone stream');
     await audioRecorder.start();
-    const readyMs = Math.round(performance.now() - triggeredAt);
+    const readyMs = Math.round(performance.now() - session.startedAt);
     debugLog('microphone recording started', { readyMs });
+    if (recordingSession !== session || session.stopRequested) {
+      debugLog('microphone started after hotkey release; canceling recording start', { readyMs });
+      audioRecorder.cancel();
+      return;
+    }
+    session.phase = 'recording';
     await showRecorderOverlay('recording');
   } catch (error) {
-    hotkeyRecording.value = false;
-    clearRecordingGuard();
-    await hideRecorderOverlay();
-    await refreshAll();
+    if (recordingSession === session) {
+      hotkeyRecording.value = false;
+      recordingSession = null;
+      clearRecordingGuard();
+      await hideRecorderOverlay();
+      await refreshAll();
+    }
     console.error('[saynow] failed to start recording', error);
     void resetNativeHotkeyMonitor('recording start failed');
   }
 }
 
-async function finishRecording() {
+async function finishRecording(session: RecordingSession) {
+  if (session.phase === 'stopping') return;
+  session.phase = 'stopping';
   busy.value = true;
   let shouldScheduleLearning = false;
   try {
-    await recordingStartPromise;
-    recordingStartPromise = null;
+    await session.startPromise;
+    if (recordingSession !== session) return;
+    if (!audioRecorder.active) {
+      debugLog('recording stopped before microphone became active');
+      return;
+    }
     await showRecorderOverlay('processing');
     const audio = await audioRecorder.stop();
     debugLog('microphone recording stopped', audio ? { durationSeconds: audio.durationSeconds, mimeType: audio.mimeType, bytesBase64: audio.audioBase64.length } : { empty: true });
@@ -270,7 +305,7 @@ async function finishRecording() {
     return;
   } finally {
     busy.value = false;
-    recordingStartPromise = null;
+    if (recordingSession === session) recordingSession = null;
   }
   if (shouldScheduleLearning) {
     scheduleLearningEngineRun();
@@ -611,6 +646,9 @@ onBeforeUnmount(() => {
   clearHotkeyStateListenRetry();
   clearCorrectionPromptTimer();
   clearLearningEngineIdleTimer();
+  recordingSession = null;
+  hotkeyRecording.value = false;
+  audioRecorder.cancel();
   window.removeEventListener('keydown', suppressRuntimeHotkeyDomEvent, true);
   window.removeEventListener('keyup', suppressRuntimeHotkeyDomEvent, true);
   unlistenHotkeyState?.();

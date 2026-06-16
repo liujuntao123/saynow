@@ -685,7 +685,6 @@ mod platform_impl {
 
     #[cfg(not(test))]
     fn start_hotkey_candidate() -> Instant {
-        let _ = remember_input_target();
         Instant::now()
     }
 

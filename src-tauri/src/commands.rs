@@ -51,6 +51,14 @@ pub fn dashboard_data(db: &AppDb) -> Result<DashboardData, String> {
     })
 }
 
+pub fn write_runtime_log_data(message: String) {
+    crate::runtime_log::write_line(&message);
+}
+
+pub fn get_runtime_log_path_data() -> Result<String, String> {
+    crate::runtime_log::log_path_string()
+}
+
 pub fn get_config_data(db: &AppDb) -> Result<AppConfig, String> {
     db.get_config().map_err(|error| error.to_string())
 }
@@ -406,12 +414,15 @@ pub fn recognize_audio_data_with_transcript<F>(
 where
     F: FnMut(String),
 {
-    eprintln!(
+    let started_at = std::time::Instant::now();
+    let start_message = format!(
         "[saynow] recognize_audio started; duration={}s mime={} base64_len={}",
         input.duration_seconds,
         input.mime_type,
         input.audio_base64.len()
     );
+    eprintln!("{start_message}");
+    crate::runtime_log::write_line(&start_message);
     if input.audio_base64.trim().is_empty() {
         eprintln!("[saynow] recognize_audio rejected empty audio");
         return insert_failed_record(db, "录音数据为空。", input.duration_seconds.max(1));
@@ -448,8 +459,13 @@ where
         &input.mime_type,
     );
 
+    let request_started_at = std::time::Instant::now();
     let recognition_result =
         call_openai_compatible_chat_with_transcript(&config, payload, on_transcript);
+    let request_elapsed_ms = request_started_at.elapsed().as_millis();
+    crate::runtime_log::write_line(&format!(
+        "[saynow] recognition provider request finished; elapsed_ms={request_elapsed_ms}"
+    ));
     let text = match recognition_result {
         Ok(text) => text,
         Err(error) => return insert_failed_record(db, &error, input.duration_seconds.max(1)),
@@ -459,7 +475,13 @@ where
         .get_personalization_preferences()
         .map_err(|error| error.to_string())?;
     let text = apply_text_preferences(text, &preferences);
-    persist_recognized_text(db, text, input.duration_seconds, inject_text)
+    let result = persist_recognized_text(db, text, input.duration_seconds, inject_text);
+    crate::runtime_log::write_line(&format!(
+        "[saynow] recognize_audio finished; elapsed_ms={} success={}",
+        started_at.elapsed().as_millis(),
+        result.is_ok()
+    ));
+    result
 }
 
 fn apply_text_preferences(text: String, preferences: &PersonalizationPreferences) -> String {
@@ -816,6 +838,7 @@ mod tauri_commands {
         db: State<'_, AppDb>,
         input: RecognitionAudioInput,
     ) -> Result<RecognitionRecord, String> {
+        crate::runtime_log::write_line("[saynow] tauri command recognize_audio invoked");
         let stream_app = app.clone();
         let result = recognize_audio_data_with_transcript(&db, input, move |text| {
             let _ = stream_app.emit_to(
@@ -841,6 +864,7 @@ mod tauri_commands {
     pub fn show_recorder_overlay_no_activate<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
     ) -> Result<(), String> {
+        crate::runtime_log::write_line("[saynow] tauri command show_recorder_overlay_no_activate invoked");
         let window = recorder_window(&app)?;
 
         #[cfg(target_os = "windows")]
@@ -862,6 +886,7 @@ mod tauri_commands {
     pub fn show_recorder_overlay_focus<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
     ) -> Result<(), String> {
+        crate::runtime_log::write_line("[saynow] tauri command show_recorder_overlay_focus invoked");
         let window = recorder_window(&app)?;
 
         #[cfg(target_os = "windows")]
@@ -880,6 +905,7 @@ mod tauri_commands {
     pub fn hide_recorder_overlay<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
     ) -> Result<(), String> {
+        crate::runtime_log::write_line("[saynow] tauri command hide_recorder_overlay invoked");
         let window = recorder_window(&app)?;
 
         #[cfg(target_os = "windows")]
@@ -930,12 +956,26 @@ mod tauri_commands {
         app: tauri::AppHandle<R>,
         parts: Option<Vec<String>>,
     ) -> Result<(), String> {
+        crate::runtime_log::write_line(&format!(
+            "[saynow] tauri command set_hotkey_monitor invoked; parts={parts:?}"
+        ));
         crate::platform::set_hotkey_monitor(app, parts)
     }
 
     #[tauri::command]
     pub fn remember_input_target() -> Result<(), String> {
+        crate::runtime_log::write_line("[saynow] tauri command remember_input_target invoked");
         crate::platform::remember_input_target()
+    }
+
+    #[tauri::command]
+    pub fn write_runtime_log(message: String) {
+        write_runtime_log_data(message);
+    }
+
+    #[tauri::command]
+    pub fn get_runtime_log_path() -> Result<String, String> {
+        get_runtime_log_path_data()
     }
 
     #[tauri::command]
@@ -984,6 +1024,8 @@ mod tauri_commands {
             set_recorder_overlay_size,
             set_hotkey_monitor,
             remember_input_target,
+            write_runtime_log,
+            get_runtime_log_path,
             restore_input_target,
             undo_last_injected_text
         ])

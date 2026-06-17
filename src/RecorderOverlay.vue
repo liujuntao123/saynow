@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emitTo } from '@tauri-apps/api/event';
 import AppIcon from './components/AppIcon.vue';
+import { writeRuntimeLog } from './api/tauri';
 
 type OverlayState = 'recording' | 'processing' | 'error' | 'correctionPrompt' | 'correctionEdit';
 
@@ -30,6 +31,19 @@ const ariaLabel = computed(() => {
   if (preview) return `${label.value}：${preview}`;
   return label.value;
 });
+
+function debugLog(message: string, details?: unknown) {
+  const formatted = details === undefined ? `[saynow] recorder ${message}` : `[saynow] recorder ${message} ${formatLogDetails(details)}`;
+  void writeRuntimeLog(formatted).catch(() => undefined);
+}
+
+function formatLogDetails(details: unknown) {
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return String(details);
+  }
+}
 
 function resetCorrection() {
   correctionRecordId.value = null;
@@ -78,14 +92,20 @@ function handleEditKeydown(event: KeyboardEvent) {
 }
 
 onMounted(async () => {
+  const mountedAt = performance.now();
   document.documentElement.classList.add('recorder-root');
   document.body.classList.add('recorder-body');
   const currentWindow = getCurrentWindow();
+  debugLog('mounted');
   unlistenState = await currentWindow.listen<{
     state: OverlayState;
     recordId?: number;
     text?: string;
   }>('recorder-state', (event) => {
+    debugLog('state event received', {
+      state: event.payload.state,
+      mountedMs: Math.round(performance.now() - mountedAt),
+    });
     state.value = event.payload.state;
     if (event.payload.state === 'correctionPrompt') {
       correctionRecordId.value = event.payload.recordId ?? null;
@@ -98,9 +118,14 @@ onMounted(async () => {
     }
   });
   unlistenTranscript = await currentWindow.listen<{ text: string; done?: boolean }>('recorder-transcript', (event) => {
+    debugLog('transcript event received', {
+      done: Boolean(event.payload.done),
+      textLength: event.payload.text?.length ?? 0,
+    });
     transcript.value = event.payload.text ?? '';
   });
   unlistenReset = await currentWindow.listen('recorder-reset', () => {
+    debugLog('reset event received');
     state.value = 'recording';
     transcript.value = '';
     resetCorrection();

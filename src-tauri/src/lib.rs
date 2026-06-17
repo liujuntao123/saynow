@@ -5,6 +5,7 @@ pub mod models;
 pub mod platform;
 pub mod prompt;
 pub mod provider;
+pub mod runtime_log;
 pub mod stats;
 
 #[cfg(feature = "desktop")]
@@ -21,6 +22,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(commands::handlers())
         .setup(|app| {
+            crate::runtime_log::write_line("[saynow] application setup started");
             let db = open_app_database(app)?;
             app.manage(db);
 
@@ -63,6 +65,7 @@ pub fn run() {
             }
 
             tray.build(app)?;
+            crate::runtime_log::write_line("[saynow] application setup finished");
             Ok(())
         })
         .on_window_event(|window, event| {

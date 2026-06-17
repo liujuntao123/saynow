@@ -47,17 +47,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v__VERSION__"
+          releaseName: "saynow v0.1.30"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 梳理热键录音状态流，区分 starting / recording / stopping，避免异步启动和松开事件互相覆盖。
-            - 录音浮层只在 MediaRecorder 真正启动后显示，避免 UI 展示与真实录音状态不一致。
-            - 从低级键盘 hook 的关键路径移除输入目标采集，降低快捷键偶发迟滞或不生效风险。
-            - 松开快捷键时优先停止录音，文本注入时再恢复目标窗口，减少焦点恢复阻塞录音流程。
-            - 增加录音启动取消清理，处理启动过程中已经松开快捷键或窗口卸载的边界情况。
+            - 增加生产环境可用的运行日志文件，记录热键、麦克风启动、录音、浮层和识别链路耗时。
+            - 将前端录音流程日志写入同一个本地日志文件，便于排查偶发启动延迟。
+            - 记录 recorder 浮窗 mounted、state/transcript/reset 事件，区分主窗口与浮窗事件延迟。
+            - 将低级热键 hook 日志改为后台队列写入，避免日志文件 IO 影响按键路径。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

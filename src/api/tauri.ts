@@ -307,3 +307,12 @@ export async function restoreInputTarget(): Promise<void> {
 export async function undoLastInjectedText(): Promise<void> {
   if (isTauri) return invoke('undo_last_injected_text');
 }
+
+export async function writeRuntimeLog(message: string): Promise<void> {
+  if (isTauri) return invoke('write_runtime_log', { message });
+}
+
+export async function getRuntimeLogPath(): Promise<string> {
+  if (isTauri) return invoke('get_runtime_log_path');
+  return '';
+}

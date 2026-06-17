@@ -36,6 +36,7 @@ import {
   runLearningEngine,
   undoLastInjectedText,
   updateStylePrompt,
+  writeRuntimeLog,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
 import { isEventPartOfHotkey, toHotkeyParts } from './domain/hotkeyRecorder';
@@ -117,10 +118,20 @@ const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !co
 const isTauriRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 function debugLog(message: string, details?: unknown) {
+  const formatted = details === undefined ? `[saynow] ${message}` : `[saynow] ${message} ${formatLogDetails(details)}`;
+  void writeRuntimeLog(formatted).catch(() => undefined);
   if (details === undefined) {
     console.info(`[saynow] ${message}`);
   } else {
     console.info(`[saynow] ${message}`, details);
+  }
+}
+
+function formatLogDetails(details: unknown) {
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return String(details);
   }
 }
 
@@ -151,7 +162,6 @@ async function refreshAll() {
 
 function startHotkeyRecording() {
   if (busy.value || recordingSession) return;
-  debugLog('hotkey pressed; starting recording');
   clearLearningEngineIdleTimer();
   hotkeyRecording.value = true;
   armRecordingGuard();
@@ -162,6 +172,7 @@ function startHotkeyRecording() {
     startPromise: Promise.resolve(),
     stopRequested: false,
   };
+  debugLog('hotkey pressed; starting recording', { sessionId: session.id });
   session.startPromise = beginRecording(session);
   recordingSession = session;
 }
@@ -169,7 +180,11 @@ function startHotkeyRecording() {
 async function stopHotkeyRecording(reason = 'hotkey released') {
   const session = recordingSession;
   if (!session) return;
-  debugLog(`${reason}; stopping recording`);
+  debugLog(`${reason}; stopping recording`, {
+    sessionId: session.id,
+    phase: session.phase,
+    elapsedMs: Math.round(performance.now() - session.startedAt),
+  });
   hotkeyRecording.value = false;
   clearRecordingGuard();
   session.stopRequested = true;
@@ -246,13 +261,23 @@ async function removeProvider(id: number) {
 
 async function beginRecording(session: RecordingSession) {
   try {
+    const rememberStartedAt = performance.now();
     await rememberInputTarget().catch((error) => console.error('[saynow] failed to remember input target', error));
-    debugLog('requesting microphone stream');
+    debugLog('input target remembered', {
+      sessionId: session.id,
+      elapsedMs: Math.round(performance.now() - rememberStartedAt),
+    });
+    const microphoneStartedAt = performance.now();
+    debugLog('requesting microphone stream', { sessionId: session.id });
     await audioRecorder.start();
     const readyMs = Math.round(performance.now() - session.startedAt);
-    debugLog('microphone recording started', { readyMs });
+    debugLog('microphone recording started', {
+      sessionId: session.id,
+      readyMs,
+      microphoneStartMs: Math.round(performance.now() - microphoneStartedAt),
+    });
     if (recordingSession !== session || session.stopRequested) {
-      debugLog('microphone started after hotkey release; canceling recording start', { readyMs });
+      debugLog('microphone started after hotkey release; canceling recording start', { sessionId: session.id, readyMs });
       audioRecorder.cancel();
       return;
     }
@@ -280,15 +305,31 @@ async function finishRecording(session: RecordingSession) {
     await session.startPromise;
     if (recordingSession !== session) return;
     if (!audioRecorder.active) {
-      debugLog('recording stopped before microphone became active');
+      debugLog('recording stopped before microphone became active', { sessionId: session.id });
       return;
     }
     await showRecorderOverlay('processing');
+    const stopStartedAt = performance.now();
     const audio = await audioRecorder.stop();
-    debugLog('microphone recording stopped', audio ? { durationSeconds: audio.durationSeconds, mimeType: audio.mimeType, bytesBase64: audio.audioBase64.length } : { empty: true });
+    debugLog('microphone recording stopped', audio ? {
+      sessionId: session.id,
+      durationSeconds: audio.durationSeconds,
+      stopMs: Math.round(performance.now() - stopStartedAt),
+      totalSessionMs: Math.round(performance.now() - session.startedAt),
+      mimeType: audio.mimeType,
+      bytesBase64: audio.audioBase64.length,
+    } : { sessionId: session.id, empty: true });
     if (audio) {
+      const recognitionStartedAt = performance.now();
       const record = await recognizeAudio(audio);
-      debugLog('recognition finished', { id: record.id, status: record.status, textLength: record.text.length, error: record.errorMessage });
+      debugLog('recognition finished', {
+        sessionId: session.id,
+        id: record.id,
+        status: record.status,
+        recognitionMs: Math.round(performance.now() - recognitionStartedAt),
+        textLength: record.text.length,
+        error: record.errorMessage,
+      });
       await refreshAll();
       if (record.status === 'success' && record.text.trim()) {
         shouldScheduleLearning = true;
@@ -317,18 +358,27 @@ async function finishRecording(session: RecordingSession) {
 
 async function showRecorderOverlay(state: 'recording' | 'processing' | 'error') {
   if (!isTauriRuntime) return;
+  const startedAt = performance.now();
   clearCorrectionPromptTimer();
   await resizeRecorderOverlay(RECORDER_OVERLAY_COMPACT_SIZE);
   await emitTo('recorder', 'recorder-state', { state });
   await positionRecorderOverlay(RECORDER_OVERLAY_COMPACT_SIZE);
   await showRecorderOverlayNoActivate();
+  debugLog('recorder overlay shown', {
+    state,
+    elapsedMs: Math.round(performance.now() - startedAt),
+  });
 }
 
 async function hideRecorderOverlay() {
   if (!isTauriRuntime) return;
+  const startedAt = performance.now();
   clearCorrectionPromptTimer();
   await hideRecorderOverlayWindow();
   await resetRecorderOverlay();
+  debugLog('recorder overlay hidden', {
+    elapsedMs: Math.round(performance.now() - startedAt),
+  });
 }
 
 async function resetRecorderOverlay() {

@@ -480,7 +480,9 @@ mod platform_impl {
             }
 
             if let Err(error) = install_hotkey_hook(app.clone(), hotkey.clone(), &stop_rx) {
-                eprintln!("[saynow] native hotkey monitor failed: {error}; retrying");
+                let message = format!("[saynow] native hotkey monitor failed: {error}; retrying");
+                eprintln!("{message}");
+                crate::runtime_log::write_line(&message);
                 clear_hook_context();
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -527,6 +529,7 @@ mod platform_impl {
         };
         let _hook_guard = HookGuard(hook);
         eprintln!("[saynow] native hotkey hook installed");
+        crate::runtime_log::write_line("[saynow] native hotkey hook installed");
 
         let mut message = MSG::default();
         let mut last_health_check = Instant::now();
@@ -554,6 +557,7 @@ mod platform_impl {
         release_active_hotkey("hook cleanup");
         clear_hook_context();
         eprintln!("[saynow] native hotkey hook stopped");
+        crate::runtime_log::write_line("[saynow] native hotkey hook stopped");
         Ok(())
     }
 
@@ -718,6 +722,7 @@ mod platform_impl {
         context.state = HotkeyState::Recording;
         context.release_miss_count = 0;
         eprintln!("[saynow] native hotkey pressed after hold");
+        crate::runtime_log::write_line("[saynow] native hotkey pressed after hold");
         (context.emit_state)("Pressed");
     }
 
@@ -747,6 +752,7 @@ mod platform_impl {
         context.release_miss_count = context.release_miss_count.saturating_add(1);
         if context.release_miss_count >= HOTKEY_AUTO_RELEASE_MISSES {
             eprintln!("[saynow] native hotkey auto-released by health check");
+            crate::runtime_log::write_line("[saynow] native hotkey auto-released by health check");
             release_context_hotkey(context, "health check");
         }
     }
@@ -948,7 +954,9 @@ mod platform_impl {
         }
         context.state = HotkeyState::Idle;
         context.release_miss_count = 0;
-        eprintln!("[saynow] native hotkey released; reason={reason}");
+        let message = format!("[saynow] native hotkey released; reason={reason}");
+        eprintln!("{message}");
+        crate::runtime_log::write_line(&message);
         (context.emit_state)("Released");
     }
 

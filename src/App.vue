@@ -268,7 +268,7 @@ async function beginRecording(session: RecordingSession) {
       elapsedMs: Math.round(performance.now() - rememberStartedAt),
     });
     const microphoneStartedAt = performance.now();
-    debugLog('requesting microphone stream', { sessionId: session.id });
+    debugLog('starting audio recorder', { sessionId: session.id });
     await audioRecorder.start();
     const readyMs = Math.round(performance.now() - session.startedAt);
     debugLog('microphone recording started', {
@@ -288,6 +288,7 @@ async function beginRecording(session: RecordingSession) {
       hotkeyRecording.value = false;
       recordingSession = null;
       clearRecordingGuard();
+      audioRecorder.cancel();
       await hideRecorderOverlay();
       await refreshAll();
     }

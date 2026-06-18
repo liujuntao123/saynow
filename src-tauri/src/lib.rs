@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod commands;
 pub mod db;
 pub mod learning;
@@ -25,15 +26,9 @@ pub fn run() {
             crate::runtime_log::write_line("[saynow] application setup started");
             let db = open_app_database(app)?;
             app.manage(db);
+            app.manage(audio::NativeAudioRecorder::default());
 
-            #[cfg(target_os = "windows")]
-            if let Some(window) = app.get_webview_window("main") {
-                allow_microphone_permission(&window)?;
-            }
-
-            let recorder_window = create_recorder_window(app)?;
-            #[cfg(target_os = "windows")]
-            allow_microphone_permission(&recorder_window)?;
+            create_recorder_window(app)?;
 
             let menu = MenuBuilder::new(app)
                 .text("show", "显示主窗口")
@@ -211,55 +206,6 @@ fn create_recorder_window<R: tauri::Runtime>(
     }
 
     Ok(window)
-}
-
-#[cfg(all(feature = "desktop", target_os = "windows"))]
-fn allow_microphone_permission<R: tauri::Runtime>(
-    window: &tauri::WebviewWindow<R>,
-) -> Result<(), tauri::Error> {
-    window.with_webview(|webview| {
-        use webview2_com::{
-            Microsoft::Web::WebView2::Win32::{
-                COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
-                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-            },
-            PermissionRequestedEventHandler,
-        };
-
-        unsafe {
-            let webview = match webview.controller().CoreWebView2() {
-                Ok(webview) => webview,
-                Err(error) => {
-                    eprintln!("[saynow] failed to get WebView2 for microphone permission: {error}");
-                    return;
-                }
-            };
-
-            let mut token = 0;
-            if let Err(error) = webview.add_PermissionRequested(
-                &PermissionRequestedEventHandler::create(Box::new(|_, args| {
-                    let Some(args) = args else {
-                        return Ok(());
-                    };
-
-                    let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
-                    args.PermissionKind(&mut kind)?;
-                    if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
-                        args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
-                    }
-
-                    Ok(())
-                })),
-                &mut token,
-            ) {
-                eprintln!(
-                    "[saynow] failed to install WebView2 microphone permission handler: {error}"
-                );
-            }
-        }
-    })?;
-
-    Ok(())
 }
 
 #[cfg(feature = "desktop")]

@@ -23,6 +23,12 @@ export interface RecognitionRecord {
   learningProcessedAt?: string | null;
 }
 
+export interface RecordedAudio {
+  audioBase64: string;
+  durationSeconds: number;
+  mimeType: string;
+}
+
 export interface CorrectionRecord {
   id: number;
   createdAt: string;

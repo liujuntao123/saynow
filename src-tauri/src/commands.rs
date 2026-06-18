@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    audio::{NativeAudioRecorder, NativeRecordedAudio},
     db::{AppConfig, AppDb, ProviderConfig},
     learning::{build_llm_learning_payload, extract_learning_rules, parse_llm_learning_rules},
     models::{
@@ -303,6 +304,20 @@ pub fn save_correction_data(
 
 pub fn undo_last_injected_text_data() -> Result<(), String> {
     crate::platform::undo_last_injected_text()
+}
+
+pub fn start_native_recording_data(recorder: &NativeAudioRecorder) -> Result<(), String> {
+    recorder.start()
+}
+
+pub fn stop_native_recording_data(
+    recorder: &NativeAudioRecorder,
+) -> Result<Option<NativeRecordedAudio>, String> {
+    recorder.stop()
+}
+
+pub fn cancel_native_recording_data(recorder: &NativeAudioRecorder) -> Result<(), String> {
+    recorder.cancel()
 }
 
 pub fn list_vocabulary_data(db: &AppDb) -> Result<Vec<VocabularyItem>, String> {
@@ -1028,6 +1043,23 @@ mod tauri_commands {
         undo_last_injected_text_data()
     }
 
+    #[tauri::command]
+    pub fn start_native_recording(recorder: State<'_, NativeAudioRecorder>) -> Result<(), String> {
+        start_native_recording_data(&recorder)
+    }
+
+    #[tauri::command]
+    pub fn stop_native_recording(
+        recorder: State<'_, NativeAudioRecorder>,
+    ) -> Result<Option<NativeRecordedAudio>, String> {
+        stop_native_recording_data(&recorder)
+    }
+
+    #[tauri::command]
+    pub fn cancel_native_recording(recorder: State<'_, NativeAudioRecorder>) -> Result<(), String> {
+        cancel_native_recording_data(&recorder)
+    }
+
     pub fn handlers<R: tauri::Runtime>(
     ) -> Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static> {
         Box::new(tauri::generate_handler![
@@ -1068,7 +1100,10 @@ mod tauri_commands {
             get_runtime_log_path,
             open_external_url,
             restore_input_target,
-            undo_last_injected_text
+            undo_last_injected_text,
+            start_native_recording,
+            stop_native_recording,
+            cancel_native_recording
         ])
     }
 }

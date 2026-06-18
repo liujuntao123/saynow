@@ -47,15 +47,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.32"
+          releaseName: "saynow v0.1.33"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 将反馈入口改为关于页，展示下载入口、当前版本、GitHub 仓库和作者联系方式二维码。
-            - 修复关于页外部链接打开行为，下载和仓库按钮会调用系统默认浏览器。
-            - 将识别浮层改为统一条形布局，内嵌状态图标和纠错操作按钮，并收紧编辑浮层尺寸。
+            - 将录音链路切换为 Tauri 原生命令和 cpal 输入流，输出 WAV 音频，减少对 WebView 麦克风权限的依赖。
+            - 新增原生录音开始、停止和取消命令，并在录音启动失败时清理会话状态和浮层。
+            - 移除浏览器预览 mock API，桌面端统一通过 Tauri invoke 调用后端能力。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

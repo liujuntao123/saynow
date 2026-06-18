@@ -316,3 +316,8 @@ export async function getRuntimeLogPath(): Promise<string> {
   if (isTauri) return invoke('get_runtime_log_path');
   return '';
 }
+
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isTauri) return invoke('open_external_url', { url });
+  window.open(url, '_blank', 'noopener,noreferrer');
+}

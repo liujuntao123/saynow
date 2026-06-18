@@ -667,6 +667,41 @@ fn latest_record(db: &AppDb) -> Result<RecognitionRecord, String> {
         .ok_or_else(|| "failed to load recognition record".to_string())
 }
 
+pub fn open_external_url_data(url: &str) -> Result<(), String> {
+    match url {
+        "https://github.com/liujuntao123/saynow"
+        | "https://github.com/liujuntao123/saynow/releases" => open_external_url_impl(url),
+        _ => Err("不允许打开该链接。".to_string()),
+    }
+}
+
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+fn open_external_url_impl(url: &str) -> Result<(), String> {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn()
+        .map_err(|error| format!("无法打开浏览器：{error}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+fn open_external_url_impl(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map_err(|error| format!("无法打开浏览器：{error}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn open_external_url_impl(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map_err(|error| format!("无法打开浏览器：{error}"))?;
+    Ok(())
+}
+
 #[cfg(feature = "desktop")]
 mod tauri_commands {
     use tauri::{Emitter, Manager, State};
@@ -979,6 +1014,11 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub fn open_external_url(url: String) -> Result<(), String> {
+        open_external_url_data(&url)
+    }
+
+    #[tauri::command]
     pub fn restore_input_target() -> Result<(), String> {
         crate::platform::restore_input_target()
     }
@@ -1026,6 +1066,7 @@ mod tauri_commands {
             remember_input_target,
             write_runtime_log,
             get_runtime_log_path,
+            open_external_url,
             restore_input_target,
             undo_last_injected_text
         ])

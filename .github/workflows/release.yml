@@ -47,15 +47,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.31"
+          releaseName: "saynow v0.1.32"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 缩小录音和识别浮层的状态球，避免录音动画被窗口边界裁切。
-            - 将 recorder overlay 可见面改为不透明实色背景，去掉玻璃透明和渐隐效果。
-            - 收紧浮层文字条和动画范围，让紧凑浮窗尺寸更稳定。
+            - 将反馈入口改为关于页，展示下载入口、当前版本、GitHub 仓库和作者联系方式二维码。
+            - 修复关于页外部链接打开行为，下载和仓库按钮会调用系统默认浏览器。
+            - 将识别浮层改为统一条形布局，内嵌状态图标和纠错操作按钮，并收紧编辑浮层尺寸。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

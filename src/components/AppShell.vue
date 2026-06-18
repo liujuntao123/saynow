@@ -14,7 +14,7 @@ const navItems = [
   { key: 'config', label: '配置', icon: 'settings' },
   { key: 'personalization', label: '个性化', icon: 'spark' },
   { key: 'data', label: '数据', icon: 'database' },
-  { key: 'feedback', label: '反馈', icon: 'message' },
+  { key: 'feedback', label: '关于', icon: 'question' },
 ];
 </script>
 

@@ -26,6 +26,10 @@ const label = computed(() => {
 
 const transcriptPreview = computed(() => transcript.value.trim());
 const correctionPreview = computed(() => correctionRawText.value.trim());
+const stripText = computed(() => {
+  if (state.value === 'correctionPrompt') return correctionPreview.value || label.value;
+  return transcriptPreview.value || label.value;
+});
 const ariaLabel = computed(() => {
   const preview = state.value.startsWith('correction') ? correctionPreview.value : transcriptPreview.value;
   if (preview) return `${label.value}：${preview}`;
@@ -148,32 +152,32 @@ onBeforeUnmount(() => {
     role="status"
     :aria-label="ariaLabel"
   >
-    <div v-if="state !== 'correctionEdit'" class="hud-orb">
-      <div class="orb-halo"></div>
-      <div class="orb-ring"></div>
-      <div class="orb-icon-wrapper">
-        <AppIcon :name="state === 'processing' ? 'activity' : state === 'correctionPrompt' ? 'text' : 'mic'" class="orb-icon" />
-      </div>
-    </div>
-
     <div v-if="state !== 'correctionEdit'" class="hud-strip">
+      <div class="hud-orb">
+        <div class="orb-halo"></div>
+        <div class="orb-ring"></div>
+        <div class="orb-icon-wrapper">
+          <AppIcon :name="state === 'processing' ? 'activity' : state === 'correctionPrompt' ? 'text' : 'mic'" class="orb-icon" />
+        </div>
+      </div>
+
       <div class="strip-content">
-        <span class="strip-text">{{ state === 'correctionPrompt' ? correctionPreview : transcriptPreview }}</span>
+        <span class="strip-text">{{ stripText }}</span>
         <span class="strip-cursor"></span>
       </div>
-    </div>
 
-    <div v-if="state === 'correctionPrompt'" class="correction-actions">
-      <button type="button" class="correction-button" @click="beginCorrectionEdit">
-        <AppIcon name="text" />
-        <span>编辑</span>
-      </button>
-      <button type="button" class="correction-icon-button" aria-label="撤销刚才输入" @click="undoCorrectionTarget">
-        <AppIcon name="undo" />
-      </button>
-      <button type="button" class="correction-icon-button" aria-label="关闭" @click="dismissCorrection">
-        <AppIcon name="x" />
-      </button>
+      <div v-if="state === 'correctionPrompt'" class="correction-actions">
+        <button type="button" class="correction-button" @click="beginCorrectionEdit">
+          <AppIcon name="text" />
+          <span>编辑</span>
+        </button>
+        <button type="button" class="correction-icon-button" aria-label="撤销刚才输入" @click="undoCorrectionTarget">
+          <AppIcon name="undo" />
+        </button>
+        <button type="button" class="correction-icon-button" aria-label="关闭" @click="dismissCorrection">
+          <AppIcon name="x" />
+        </button>
+      </div>
     </div>
 
     <form v-if="state === 'correctionEdit'" class="correction-editor" @submit.prevent="submitCorrection">
@@ -208,21 +212,39 @@ onBeforeUnmount(() => {
   width: fit-content !important;
   max-width: 100vw !important;
   height: max-content !important;
-  padding: 6px !important;
+  padding: 5px !important;
+}
+
+.hud-strip {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: fit-content;
+  min-width: 136px;
+  max-width: min(640px, calc(100vw - 10px));
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  border-radius: 20px;
+  padding: 4px 5px;
+  background: #ffffff;
+  box-shadow:
+    0 10px 28px rgba(15, 23, 42, 0.14),
+    inset 0 0 0 1px rgba(15, 143, 131, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.95);
 }
 
 .hud-orb {
   position: relative;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  background: #ffffff;
+  background: #f8fbfa;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.12),
-    inset 0 1px 1px rgba(255, 255, 255, 1),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.12);
 
   display: flex;
   align-items: center;
@@ -277,12 +299,8 @@ onBeforeUnmount(() => {
   animation: orb-breathe 1.7s ease-in-out infinite alternate;
 }
 .morph-hud.recording .hud-orb {
-  background: #f4fffd;
-  box-shadow:
-    0 10px 28px rgba(15, 143, 131, 0.22),
-    0 0 0 0 rgba(15, 143, 131, 0.28),
-    inset 0 1px 1px rgba(255, 255, 255, 1),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+  background: #effdf9;
+  box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.16);
   animation: orb-recording-pop 1.4s ease-in-out infinite;
 }
 .morph-hud.recording .orb-icon {
@@ -333,62 +351,24 @@ onBeforeUnmount(() => {
 
 .morph-hud.correctionPrompt .hud-orb {
   background: #f8fbff;
-  box-shadow:
-    0 10px 28px rgba(29, 78, 216, 0.16),
-    inset 0 1px 1px rgba(255, 255, 255, 1),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.14);
 }
 
 .morph-hud.correctionPrompt .orb-icon {
   color: #1d4ed8;
 }
 
-.hud-strip {
-  position: relative;
-  z-index: 1;
-  max-width: 0;
-  opacity: 0;
-  height: 30px;
-  margin-left: -14px;
-
-  background: #ffffff;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border-radius: 16px;
-  box-shadow:
-    0 8px 24px rgba(15, 23, 42, 0.14),
-    inset 0 0 0 1px rgba(15, 143, 131, 0.12),
-    inset 0 1px 1px rgba(255, 255, 255, 0.95);
-
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition:
-    max-width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
-    opacity 0.4s ease,
-    transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
-    padding 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
-
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-}
-
 .morph-hud.has-transcript .hud-strip {
-  max-width: calc(100vw - 108px);
-  opacity: 1;
-  transform: scaleX(1);
-  padding: 0 14px 0 26px;
+  max-width: min(640px, calc(100vw - 10px));
 }
 
 .morph-hud.has-correction .hud-strip {
-  max-width: min(560px, calc(100vw - 190px));
-  opacity: 1;
-  transform: scaleX(1);
-  padding: 0 14px 0 26px;
+  max-width: min(640px, calc(100vw - 10px));
 }
 
 .strip-content {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   min-width: 0;
   max-width: 100%;
@@ -399,7 +379,7 @@ onBeforeUnmount(() => {
 .strip-text {
   display: block;
   min-width: 0;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 650;
   color: #0f172a;
   letter-spacing: 0;
@@ -409,9 +389,10 @@ onBeforeUnmount(() => {
 }
 
 .strip-cursor {
+  flex: 0 0 auto;
   display: inline-block;
   width: 2px;
-  height: 14px;
+  height: 12px;
   background: #0f8f83;
   margin-left: 4px;
   border-radius: 2px;
@@ -441,14 +422,11 @@ onBeforeUnmount(() => {
 .correction-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-left: 8px;
-  padding: 4px;
-  border-radius: 16px;
-  background: #ffffff;
-  box-shadow:
-    0 8px 24px rgba(15, 23, 42, 0.14),
-    inset 0 0 0 1px rgba(15, 143, 131, 0.12);
+  gap: 5px;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(15, 143, 131, 0.12);
 }
 
 .correction-button,
@@ -466,11 +444,11 @@ onBeforeUnmount(() => {
 .correction-primary {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
+  gap: 5px;
+  min-height: 28px;
   border-radius: 8px;
-  padding: 0 10px;
-  font-size: 13px;
+  padding: 0 9px;
+  font-size: 12px;
   font-weight: 750;
 }
 
@@ -481,8 +459,8 @@ onBeforeUnmount(() => {
 
 .correction-icon-button {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   border-radius: 8px;
   color: #64748b;
@@ -490,9 +468,9 @@ onBeforeUnmount(() => {
 
 .correction-editor {
   display: grid;
-  gap: 10px;
-  width: min(720px, calc(100vw - 24px));
-  padding: 12px;
+  gap: 8px;
+  width: min(600px, calc(100vw - 20px));
+  padding: 10px;
   border-radius: 12px;
   background: #ffffff;
   box-shadow:
@@ -502,16 +480,16 @@ onBeforeUnmount(() => {
 
 .correction-textarea {
   width: 100%;
-  min-height: 104px;
-  max-height: 180px;
+  min-height: 82px;
+  max-height: 126px;
   resize: vertical;
   border: 1px solid rgba(15, 143, 131, 0.18);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   color: #0f172a;
   background: #ffffff;
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .correction-textarea:focus {
@@ -522,21 +500,21 @@ onBeforeUnmount(() => {
 .correction-editor-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 7px;
 }
 
 .correction-secondary {
-  min-height: 32px;
+  min-height: 30px;
   border-radius: 8px;
-  padding: 0 12px;
+  padding: 0 11px;
   color: #64748b;
   background: #f1f5f9;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .correction-primary {
-  min-height: 32px;
+  min-height: 30px;
   color: #ffffff;
   background: #0f8f83;
   box-shadow: 0 8px 18px rgba(15, 143, 131, 0.18);
@@ -545,19 +523,11 @@ onBeforeUnmount(() => {
 @keyframes orb-recording-pop {
   0%, 100% {
     transform: scale(1);
-    box-shadow:
-      0 10px 28px rgba(15, 143, 131, 0.22),
-      0 0 0 0 rgba(15, 143, 131, 0.28),
-      inset 0 1px 1px rgba(255, 255, 255, 1),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+    box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.16);
   }
   50% {
-    transform: scale(1.06);
-    box-shadow:
-      0 12px 32px rgba(15, 143, 131, 0.26),
-      0 0 0 8px rgba(15, 143, 131, 0),
-      inset 0 1px 1px rgba(255, 255, 255, 1),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+    transform: scale(1.04);
+    box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.24);
   }
 }
 

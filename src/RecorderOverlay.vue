@@ -208,17 +208,17 @@ onBeforeUnmount(() => {
   width: fit-content !important;
   max-width: 100vw !important;
   height: max-content !important;
-  padding: 12px !important;
+  padding: 6px !important;
 }
 
 .hud-orb {
   position: relative;
-  width: 38px;
-  height: 38px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.12),
     inset 0 1px 1px rgba(255, 255, 255, 1),
@@ -240,13 +240,13 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  opacity: 0.15;
+  opacity: 1;
   transition: all 0.5s ease;
 }
 
 .orb-ring {
   position: absolute;
-  inset: -2px;
+  inset: -1px;
   border-radius: 50%;
   pointer-events: none;
   opacity: 0;
@@ -268,16 +268,16 @@ onBeforeUnmount(() => {
 }
 
 .orb-icon {
-  font-size: 16px;
+  font-size: 13px;
   transition: color 0.4s ease;
 }
 
 .morph-hud.recording .orb-halo {
-  background: linear-gradient(135deg, #0f8f83, #2dd4bf);
+  background: #d7faf4;
   animation: orb-breathe 1.7s ease-in-out infinite alternate;
 }
 .morph-hud.recording .hud-orb {
-  background: rgba(244, 255, 253, 0.86);
+  background: #f4fffd;
   box-shadow:
     0 10px 28px rgba(15, 143, 131, 0.22),
     0 0 0 0 rgba(15, 143, 131, 0.28),
@@ -300,8 +300,8 @@ onBeforeUnmount(() => {
 }
 
 .morph-hud.processing .orb-halo {
-  background: linear-gradient(135deg, #f59e0b, #f97316);
-  opacity: 0.25;
+  background: #fff3d6;
+  opacity: 1;
 }
 .morph-hud.processing .orb-icon {
   color: #d97706;
@@ -318,8 +318,8 @@ onBeforeUnmount(() => {
 }
 
 .morph-hud.error .orb-halo {
-  background: #ef4444;
-  opacity: 0.25;
+  background: #fee2e2;
+  opacity: 1;
 }
 .morph-hud.error .orb-icon {
   color: #ef4444;
@@ -327,12 +327,12 @@ onBeforeUnmount(() => {
 }
 
 .morph-hud.correctionPrompt .orb-halo {
-  background: linear-gradient(135deg, #1d4ed8, #0f8f83);
-  opacity: 0.16;
+  background: #e5efff;
+  opacity: 1;
 }
 
 .morph-hud.correctionPrompt .hud-orb {
-  background: rgba(248, 251, 255, 0.92);
+  background: #f8fbff;
   box-shadow:
     0 10px 28px rgba(29, 78, 216, 0.16),
     inset 0 1px 1px rgba(255, 255, 255, 1),
@@ -348,12 +348,12 @@ onBeforeUnmount(() => {
   z-index: 1;
   max-width: 0;
   opacity: 0;
-  height: 32px;
-  margin-left: -19px;
+  height: 30px;
+  margin-left: -14px;
 
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(250, 253, 252, 0.88));
-  backdrop-filter: blur(16px) saturate(170%);
-  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  background: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-radius: 16px;
   box-shadow:
     0 8px 24px rgba(15, 23, 42, 0.14),
@@ -377,14 +377,14 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 108px);
   opacity: 1;
   transform: scaleX(1);
-  padding: 0 16px 0 28px;
+  padding: 0 14px 0 26px;
 }
 
 .morph-hud.has-correction .hud-strip {
   max-width: min(560px, calc(100vw - 190px));
   opacity: 1;
   transform: scaleX(1);
-  padding: 0 16px 0 28px;
+  padding: 0 14px 0 26px;
 }
 
 .strip-content {
@@ -394,8 +394,6 @@ onBeforeUnmount(() => {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
-  -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
-  mask-image: linear-gradient(90deg, #000 85%, transparent 100%);
 }
 
 .strip-text {
@@ -436,8 +434,8 @@ onBeforeUnmount(() => {
 }
 
 @keyframes orb-breathe {
-  0% { transform: scale(0.9); opacity: 0.1; }
-  100% { transform: scale(1.1); opacity: 0.25; }
+  0% { transform: scale(0.96); }
+  100% { transform: scale(1.06); }
 }
 
 .correction-actions {
@@ -447,7 +445,7 @@ onBeforeUnmount(() => {
   margin-left: 8px;
   padding: 4px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.92);
+  background: #ffffff;
   box-shadow:
     0 8px 24px rgba(15, 23, 42, 0.14),
     inset 0 0 0 1px rgba(15, 143, 131, 0.12);
@@ -477,7 +475,7 @@ onBeforeUnmount(() => {
 }
 
 .correction-button {
-  background: rgba(15, 143, 131, 0.1);
+  background: #e7f7f5;
   color: #08776f;
 }
 
@@ -496,7 +494,7 @@ onBeforeUnmount(() => {
   width: min(720px, calc(100vw - 24px));
   padding: 12px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.96);
+  background: #ffffff;
   box-shadow:
     0 18px 42px rgba(15, 23, 42, 0.2),
     inset 0 0 0 1px rgba(15, 143, 131, 0.12);
@@ -532,7 +530,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   padding: 0 12px;
   color: #64748b;
-  background: rgba(100, 116, 139, 0.08);
+  background: #f1f5f9;
   font-size: 13px;
   font-weight: 700;
 }
@@ -570,7 +568,7 @@ onBeforeUnmount(() => {
 
 @keyframes ring-ripple {
   0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.34); opacity: 0; }
 }
 
 @keyframes ring-spin {

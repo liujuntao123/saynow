@@ -47,16 +47,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.30"
+          releaseName: "saynow v0.1.31"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 增加生产环境可用的运行日志文件，记录热键、麦克风启动、录音、浮层和识别链路耗时。
-            - 将前端录音流程日志写入同一个本地日志文件，便于排查偶发启动延迟。
-            - 记录 recorder 浮窗 mounted、state/transcript/reset 事件，区分主窗口与浮窗事件延迟。
-            - 将低级热键 hook 日志改为后台队列写入，避免日志文件 IO 影响按键路径。
+            - 缩小录音和识别浮层的状态球，避免录音动画被窗口边界裁切。
+            - 将 recorder overlay 可见面改为不透明实色背景，去掉玻璃透明和渐隐效果。
+            - 收紧浮层文字条和动画范围，让紧凑浮窗尺寸更稳定。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

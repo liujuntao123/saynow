@@ -227,12 +227,10 @@ onBeforeUnmount(() => {
   gap: 8px;
   overflow: hidden;
   border-radius: 20px;
+  border: 1px solid transparent;
   padding: 4px 5px;
   background: #ffffff;
-  box-shadow:
-    0 10px 28px rgba(15, 23, 42, 0.14),
-    inset 0 0 0 1px rgba(15, 143, 131, 0.12),
-    inset 0 1px 1px rgba(255, 255, 255, 0.95);
+  box-shadow: none;
 }
 
 .hud-orb {
@@ -472,10 +470,9 @@ onBeforeUnmount(() => {
   width: min(600px, calc(100vw - 20px));
   padding: 10px;
   border-radius: 12px;
+  border: 1px solid transparent;
   background: #ffffff;
-  box-shadow:
-    0 18px 42px rgba(15, 23, 42, 0.2),
-    inset 0 0 0 1px rgba(15, 143, 131, 0.12);
+  box-shadow: none;
 }
 
 .correction-textarea {

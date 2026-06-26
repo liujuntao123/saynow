@@ -118,7 +118,7 @@ mod platform_impl {
         ptr::copy_nonoverlapping,
         sync::{
             atomic::{AtomicBool, Ordering},
-            mpsc, Mutex, OnceLock,
+            mpsc, Arc, Mutex, OnceLock,
         },
         thread,
         time::{Duration, Instant},
@@ -159,6 +159,8 @@ mod platform_impl {
     const KEY_DOWN_MASK: i16 = i16::MIN;
     const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(20);
     const HOTKEY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+    const HOTKEY_MONITOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
+    const HOTKEY_HOOK_REFRESH_INTERVAL: Duration = Duration::from_secs(900);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
     const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(60);
     const CLIPBOARD_OPEN_RETRIES: usize = 8;
@@ -191,7 +193,8 @@ mod platform_impl {
         captured_order: Vec<HotkeyKey>,
         state: HotkeyState,
         release_miss_count: u8,
-        emit_state: Box<dyn Fn(&str) + Send + Sync>,
+        pending_events: Vec<PendingHotkeyEvent>,
+        emit_state: Arc<dyn Fn(&str) + Send + Sync>,
         should_stop: AtomicBool,
     }
 
@@ -219,6 +222,12 @@ mod platform_impl {
                 _ => None,
             }
         }
+    }
+
+    #[derive(Debug)]
+    enum PendingHotkeyEvent {
+        Pressed,
+        Released { reason: String },
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -479,29 +488,44 @@ mod platform_impl {
                 break;
             }
 
-            if let Err(error) = install_hotkey_hook(app.clone(), hotkey.clone(), &stop_rx) {
-                let message = format!("[saynow] native hotkey monitor failed: {error}; retrying");
-                eprintln!("{message}");
-                crate::runtime_log::write_line(&message);
-                clear_hook_context();
-                if stop_rx.try_recv().is_ok() {
-                    break;
+            match install_hotkey_hook(app.clone(), hotkey.clone(), &stop_rx) {
+                Ok(HookExitReason::StopRequested) => break,
+                Ok(HookExitReason::RefreshRequested) => {
+                    crate::runtime_log::write_line(
+                        "[saynow] refreshing native hotkey hook after interval",
+                    );
+                    clear_hook_context();
+                    continue;
                 }
-                thread::sleep(Duration::from_millis(1000));
-                continue;
+                Err(error) => {
+                    let message =
+                        format!("[saynow] native hotkey monitor failed: {error}; retrying");
+                    eprintln!("{message}");
+                    crate::runtime_log::write_line(&message);
+                    clear_hook_context();
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1000));
+                    continue;
+                }
             }
-
-            break;
         }
+    }
+
+    enum HookExitReason {
+        StopRequested,
+        RefreshRequested,
     }
 
     fn install_hotkey_hook<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
         hotkey: HotkeySpec,
         stop_rx: &mpsc::Receiver<()>,
-    ) -> Result<(), String> {
+    ) -> Result<HookExitReason, String> {
         let emit_app = app.clone();
-        let emit_state = Box::new(move |state: &str| emit_hotkey_state(&emit_app, state));
+        let emit_state: Arc<dyn Fn(&str) + Send + Sync> =
+            Arc::new(move |state: &str| emit_hotkey_state(&emit_app, state));
         {
             let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
             let mut context = context_lock
@@ -514,6 +538,7 @@ mod platform_impl {
                 captured_order: Vec::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
+                pending_events: Vec::new(),
                 emit_state,
                 should_stop: AtomicBool::new(false),
             });
@@ -533,10 +558,14 @@ mod platform_impl {
 
         let mut message = MSG::default();
         let mut last_health_check = Instant::now();
+        let mut last_heartbeat = Instant::now();
+        let installed_at = Instant::now();
+        let mut exit_reason = HookExitReason::StopRequested;
         loop {
             if stop_rx.try_recv().is_ok() {
                 release_active_hotkey("monitor stop requested");
                 mark_hook_stop();
+                flush_pending_hotkey_events();
                 break;
             }
 
@@ -551,14 +580,26 @@ mod platform_impl {
                 check_hotkey_health();
                 last_health_check = Instant::now();
             }
+            flush_pending_hotkey_events();
+            if last_heartbeat.elapsed() >= HOTKEY_MONITOR_HEARTBEAT_INTERVAL {
+                crate::runtime_log::write_line("[saynow] native hotkey monitor heartbeat");
+                last_heartbeat = Instant::now();
+            }
+            if installed_at.elapsed() >= HOTKEY_HOOK_REFRESH_INTERVAL {
+                release_active_hotkey("hook refresh");
+                flush_pending_hotkey_events();
+                exit_reason = HookExitReason::RefreshRequested;
+                break;
+            }
             thread::sleep(HOOK_POLL_INTERVAL);
         }
 
         release_active_hotkey("hook cleanup");
+        flush_pending_hotkey_events();
         clear_hook_context();
         eprintln!("[saynow] native hotkey hook stopped");
         crate::runtime_log::write_line("[saynow] native hotkey hook stopped");
-        Ok(())
+        Ok(exit_reason)
     }
 
     unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -721,9 +762,7 @@ mod platform_impl {
 
         context.state = HotkeyState::Recording;
         context.release_miss_count = 0;
-        eprintln!("[saynow] native hotkey pressed after hold");
-        crate::runtime_log::write_line("[saynow] native hotkey pressed after hold");
-        (context.emit_state)("Pressed");
+        context.pending_events.push(PendingHotkeyEvent::Pressed);
     }
 
     fn check_hotkey_health() {
@@ -954,10 +993,43 @@ mod platform_impl {
         }
         context.state = HotkeyState::Idle;
         context.release_miss_count = 0;
-        let message = format!("[saynow] native hotkey released; reason={reason}");
-        eprintln!("{message}");
-        crate::runtime_log::write_line(&message);
-        (context.emit_state)("Released");
+        context
+            .pending_events
+            .push(PendingHotkeyEvent::Released {
+                reason: reason.to_string(),
+            });
+    }
+
+    fn flush_pending_hotkey_events() {
+        let context_lock = HOOK_CONTEXT.get_or_init(|| Mutex::new(None));
+        let Some((emit_state, events)) = context_lock.lock().ok().and_then(|mut context| {
+            let context = context.as_mut()?;
+            if context.pending_events.is_empty() {
+                return None;
+            }
+            Some((
+                context.emit_state.clone(),
+                context.pending_events.drain(..).collect::<Vec<_>>(),
+            ))
+        }) else {
+            return;
+        };
+
+        for event in events {
+            match event {
+                PendingHotkeyEvent::Pressed => {
+                    eprintln!("[saynow] native hotkey pressed after hold");
+                    crate::runtime_log::write_line("[saynow] native hotkey pressed after hold");
+                    emit_state("Pressed");
+                }
+                PendingHotkeyEvent::Released { reason } => {
+                    let message = format!("[saynow] native hotkey released; reason={reason}");
+                    eprintln!("{message}");
+                    crate::runtime_log::write_line(&message);
+                    emit_state("Released");
+                }
+            }
+        }
     }
 
     fn clear_hook_context() {
@@ -1321,7 +1393,8 @@ mod platform_impl {
                 captured_order: Vec::new(),
                 state: HotkeyState::Idle,
                 release_miss_count: 0,
-                emit_state: Box::new(|_| {}),
+                pending_events: Vec::new(),
+                emit_state: Arc::new(|_| {}),
                 should_stop: AtomicBool::new(false),
             }
         }

@@ -47,14 +47,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.34"
+          releaseName: "saynow v0.1.35"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 移除录音浮层主容器和纠错编辑容器的外层阴影。
-            - 将浮层容器边框改为透明，保留更简单干净的悬浮样式。
+            - 降低全局快捷键监听回调阻塞风险，避免长时间运行后快捷键静默失效。
+            - 增加快捷键监听心跳日志和定期 hook 刷新，便于定位 build 版快捷键问题。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

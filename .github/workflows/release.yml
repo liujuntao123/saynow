@@ -47,14 +47,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.35"
+          releaseName: "saynow v0.1.36"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 降低全局快捷键监听回调阻塞风险，避免长时间运行后快捷键静默失效。
-            - 增加快捷键监听心跳日志和定期 hook 刷新，便于定位 build 版快捷键问题。
+            - 预热并保持原生麦克风输入流，减少长时间空闲后首次快捷键录音的冷启动等待。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

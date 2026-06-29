@@ -1,6 +1,9 @@
 use std::{
     io::Write,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Instant,
 };
 
@@ -13,15 +16,16 @@ use serde::Serialize;
 
 #[derive(Default)]
 pub struct NativeAudioRecorder {
-    session: Mutex<Option<RecordingSession>>,
+    input: Mutex<Option<WarmInputStream>>,
 }
 
-struct RecordingSession {
-    stream: Stream,
+struct WarmInputStream {
+    _stream: Stream,
     samples: Arc<Mutex<Vec<i16>>>,
+    recording: Arc<AtomicBool>,
     sample_rate: u32,
     channels: u16,
-    started_at: Instant,
+    started_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,74 +37,70 @@ pub struct NativeRecordedAudio {
 }
 
 impl NativeAudioRecorder {
-    pub fn start(&self) -> Result<(), String> {
-        let mut session = self
-            .session
+    pub fn warm_up(&self) -> Result<(), String> {
+        let mut input = self
+            .input
             .lock()
             .map_err(|_| "无法锁定原生录音状态。".to_string())?;
-        if session.is_some() {
+        if input.is_none() {
+            *input = Some(create_warm_input_stream()?);
+        }
+        Ok(())
+    }
+
+    pub fn start(&self) -> Result<(), String> {
+        let mut input = self
+            .input
+            .lock()
+            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
+        if input.is_none() {
+            *input = Some(create_warm_input_stream()?);
+        }
+        let input = input.as_mut().expect("input stream just initialized");
+        if input.recording.load(Ordering::SeqCst) {
             return Ok(());
         }
-
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "未找到可用麦克风输入设备。".to_string())?;
-        let supported_config = device
-            .default_input_config()
-            .map_err(|error| format!("无法读取麦克风默认配置：{error}"))?;
-        let sample_format = supported_config.sample_format();
-        let config = supported_config.config();
-        let sample_rate = config.sample_rate.0;
-        let channels = config.channels;
-        let samples = Arc::new(Mutex::new(Vec::<i16>::with_capacity(
-            sample_rate as usize * channels as usize * 10,
-        )));
-
-        let stream = build_input_stream(&device, &config, sample_format, Arc::clone(&samples))?;
-        stream
-            .play()
-            .map_err(|error| format!("无法启动原生录音流：{error}"))?;
-
-        *session = Some(RecordingSession {
-            stream,
-            samples,
-            sample_rate,
-            channels,
-            started_at: Instant::now(),
-        });
+        input
+            .samples
+            .lock()
+            .map_err(|_| "无法清空原生录音采样。".to_string())?
+            .clear();
+        input.started_at = Some(Instant::now());
+        input.recording.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     pub fn stop(&self) -> Result<Option<NativeRecordedAudio>, String> {
-        let session = self
-            .session
+        let mut input = self
+            .input
             .lock()
-            .map_err(|_| "无法锁定原生录音状态。".to_string())?
-            .take();
-        let Some(session) = session else {
+            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
+        let Some(input) = input.as_mut() else {
             return Ok(None);
         };
+        if !input.recording.swap(false, Ordering::SeqCst) {
+            return Ok(None);
+        }
 
-        let RecordingSession {
-            stream,
-            samples,
-            sample_rate,
-            channels,
-            started_at,
-        } = session;
-        drop(stream);
-
-        let duration_seconds = started_at.elapsed().as_secs().max(1) as u32;
-        let samples = samples
-            .lock()
-            .map_err(|_| "无法读取原生录音采样。".to_string())?
-            .clone();
+        let duration_seconds = input
+            .started_at
+            .take()
+            .map(|started_at| started_at.elapsed().as_secs().max(1) as u32)
+            .unwrap_or(1);
+        let samples = {
+            let mut buffer = input
+                .samples
+                .lock()
+                .map_err(|_| "无法读取原生录音采样。".to_string())?;
+            let samples = buffer.clone();
+            buffer.clear();
+            samples
+        };
         if samples.is_empty() {
             return Ok(None);
         }
 
-        let wav = encode_wav_pcm16(&samples, sample_rate, channels)
+        let wav = encode_wav_pcm16(&samples, input.sample_rate, input.channels)
             .map_err(|error| format!("无法编码 WAV 音频：{error}"))?;
         Ok(Some(NativeRecordedAudio {
             audio_base64: general_purpose::STANDARD.encode(wav),
@@ -110,12 +110,60 @@ impl NativeAudioRecorder {
     }
 
     pub fn cancel(&self) -> Result<(), String> {
-        self.session
+        let mut input = self
+            .input
             .lock()
-            .map_err(|_| "无法锁定原生录音状态。".to_string())?
-            .take();
+            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
+        let Some(input) = input.as_mut() else {
+            return Ok(());
+        };
+        input.recording.store(false, Ordering::SeqCst);
+        input.started_at = None;
+        input
+            .samples
+            .lock()
+            .map_err(|_| "无法清空原生录音采样。".to_string())?
+            .clear();
         Ok(())
     }
+}
+
+fn create_warm_input_stream() -> Result<WarmInputStream, String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or_else(|| "未找到可用麦克风输入设备。".to_string())?;
+    let supported_config = device
+        .default_input_config()
+        .map_err(|error| format!("无法读取麦克风默认配置：{error}"))?;
+    let sample_format = supported_config.sample_format();
+    let config = supported_config.config();
+    let sample_rate = config.sample_rate.0;
+    let channels = config.channels;
+    let samples = Arc::new(Mutex::new(Vec::<i16>::with_capacity(
+        sample_rate as usize * channels as usize * 10,
+    )));
+    let recording = Arc::new(AtomicBool::new(false));
+
+    let stream = build_input_stream(
+        &device,
+        &config,
+        sample_format,
+        Arc::clone(&samples),
+        Arc::clone(&recording),
+    )?;
+    stream
+        .play()
+        .map_err(|error| format!("无法启动原生录音流：{error}"))?;
+
+    Ok(WarmInputStream {
+        _stream: stream,
+        samples,
+        recording,
+        sample_rate,
+        channels,
+        started_at: None,
+    })
 }
 
 fn build_input_stream(
@@ -123,19 +171,20 @@ fn build_input_stream(
     config: &cpal::StreamConfig,
     sample_format: SampleFormat,
     samples: Arc<Mutex<Vec<i16>>>,
+    recording: Arc<AtomicBool>,
 ) -> Result<Stream, String> {
     let err_fn = |error| eprintln!("[saynow] native audio input stream error: {error}");
     match sample_format {
-        SampleFormat::I8 => build_stream(device, config, samples, err_fn, convert_i8),
-        SampleFormat::I16 => build_stream(device, config, samples, err_fn, convert_i16),
-        SampleFormat::I32 => build_stream(device, config, samples, err_fn, convert_i32),
-        SampleFormat::I64 => build_stream(device, config, samples, err_fn, convert_i64),
-        SampleFormat::U8 => build_stream(device, config, samples, err_fn, convert_u8),
-        SampleFormat::U16 => build_stream(device, config, samples, err_fn, convert_u16),
-        SampleFormat::U32 => build_stream(device, config, samples, err_fn, convert_u32),
-        SampleFormat::U64 => build_stream(device, config, samples, err_fn, convert_u64),
-        SampleFormat::F32 => build_stream(device, config, samples, err_fn, convert_f32),
-        SampleFormat::F64 => build_stream(device, config, samples, err_fn, convert_f64),
+        SampleFormat::I8 => build_stream(device, config, samples, recording, err_fn, convert_i8),
+        SampleFormat::I16 => build_stream(device, config, samples, recording, err_fn, convert_i16),
+        SampleFormat::I32 => build_stream(device, config, samples, recording, err_fn, convert_i32),
+        SampleFormat::I64 => build_stream(device, config, samples, recording, err_fn, convert_i64),
+        SampleFormat::U8 => build_stream(device, config, samples, recording, err_fn, convert_u8),
+        SampleFormat::U16 => build_stream(device, config, samples, recording, err_fn, convert_u16),
+        SampleFormat::U32 => build_stream(device, config, samples, recording, err_fn, convert_u32),
+        SampleFormat::U64 => build_stream(device, config, samples, recording, err_fn, convert_u64),
+        SampleFormat::F32 => build_stream(device, config, samples, recording, err_fn, convert_f32),
+        SampleFormat::F64 => build_stream(device, config, samples, recording, err_fn, convert_f64),
         _ => Err(format!("不支持的麦克风采样格式：{sample_format:?}")),
     }
 }
@@ -144,6 +193,7 @@ fn build_stream<T, F>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     samples: Arc<Mutex<Vec<i16>>>,
+    recording: Arc<AtomicBool>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
     convert: F,
 ) -> Result<Stream, String>
@@ -155,8 +205,10 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _| {
-                if let Ok(mut buffer) = samples.lock() {
-                    buffer.extend(data.iter().copied().map(convert));
+                if recording.load(Ordering::SeqCst) {
+                    if let Ok(mut buffer) = samples.lock() {
+                        buffer.extend(data.iter().copied().map(convert));
+                    }
                 }
             },
             err_fn,

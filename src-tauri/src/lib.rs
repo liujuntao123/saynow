@@ -26,7 +26,13 @@ pub fn run() {
             crate::runtime_log::write_line("[saynow] application setup started");
             let db = open_app_database(app)?;
             app.manage(db);
-            app.manage(audio::NativeAudioRecorder::default());
+            let recorder = audio::NativeAudioRecorder::default();
+            if let Err(error) = recorder.warm_up() {
+                crate::runtime_log::write_line(&format!(
+                    "[saynow] native audio warm-up skipped: {error}"
+                ));
+            }
+            app.manage(recorder);
 
             create_recorder_window(app)?;
 

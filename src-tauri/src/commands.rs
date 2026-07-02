@@ -990,7 +990,7 @@ mod tauri_commands {
         height: f64,
     ) -> Result<(), String> {
         recorder_window(&app)?
-            .set_size(tauri::PhysicalSize::new(width, height))
+            .set_size(tauri::LogicalSize::new(width, height))
             .map_err(|error| error.to_string())
     }
 

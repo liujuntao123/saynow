@@ -47,13 +47,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.36"
+          releaseName: "saynow v0.1.37"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 预热并保持原生麦克风输入流，减少长时间空闲后首次快捷键录音的冷启动等待。
+            - 修复高 DPI 缩放下录音 overlay 窗口高度偏小，导致下半截被裁切的问题。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

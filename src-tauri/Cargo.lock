@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "saynow"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

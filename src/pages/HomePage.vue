@@ -19,6 +19,11 @@ function formatDuration(seconds = 0) {
 function formatDate(value: string) {
   return new Date(value).toLocaleString();
 }
+
+// 入场动画延迟封顶，长列表末尾不再等待数秒。
+function animationDelay(index: number) {
+  return `${Math.min(index, 12) * 40}ms`;
+}
 </script>
 
 <template>
@@ -26,14 +31,35 @@ function formatDate(value: string) {
     <PageHeader title="首页" :subtitle="dashboard?.platform.message" icon="home" />
 
     <section class="metrics-grid metrics-grid-home">
-      <MetricCard icon="clock" label="总识别时长" :value="formatDuration(dashboard?.stats.totalDurationSeconds)" />
-      <MetricCard icon="activity" label="语音条数" :value="dashboard?.stats.totalRecords ?? 0" />
-      <MetricCard icon="text" label="转换字数" :value="dashboard?.stats.totalCharacters ?? 0" />
+      <MetricCard
+        icon="clock"
+        label="今日识别时长"
+        :value="formatDuration(dashboard?.stats.todayDurationSeconds)"
+        :hint="`累计 ${formatDuration(dashboard?.stats.totalDurationSeconds)}`"
+      />
+      <MetricCard
+        icon="activity"
+        label="今日语音条数"
+        :value="dashboard?.stats.todayRecords ?? 0"
+        :hint="`累计 ${dashboard?.stats.totalRecords ?? 0} 条`"
+      />
+      <MetricCard
+        icon="text"
+        label="今日转换字数"
+        :value="dashboard?.stats.todayCharacters ?? 0"
+        :hint="`累计 ${dashboard?.stats.totalCharacters ?? 0} 字`"
+      />
+      <MetricCard
+        icon="check"
+        label="识别成功率"
+        :value="dashboard?.stats.successRatePercent != null ? `${dashboard.stats.successRatePercent}%` : '—'"
+        hint="基于近期识别记录"
+      />
     </section>
 
     <UiPanel title="最近识别记录" :meta="`${dashboard?.records.length ?? 0} 条`" icon="fileText" class="glass-panel home-record-panel">
       <div v-if="dashboard?.records.length" class="record-card-list compact-record-list">
-        <article v-for="(record, index) in dashboard.records" :key="record.id" class="record-card" :style="{ animationDelay: `${index * 40}ms` }">
+        <article v-for="(record, index) in dashboard.records" :key="record.id" class="record-card" :style="{ animationDelay: animationDelay(index) }">
           <div class="record-card-main">
             <p>{{ record.text }}</p>
             <div class="record-card-tags">
@@ -57,7 +83,7 @@ function formatDate(value: string) {
 .page-stack { display: flex; flex-direction: column; gap: 24px; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 
 /* 数据卡片网格 */
-.metrics-grid { display: grid; gap: 24px; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 0 0 auto; }
+.metrics-grid { display: grid; gap: 20px; grid-template-columns: repeat(4, minmax(0, 1fr)); flex: 0 0 auto; }
 :deep(.metric-card) {
   background: #ffffff;
   backdrop-filter: none;
@@ -65,29 +91,34 @@ function formatDate(value: string) {
   box-shadow: 0 18px 38px -24px rgba(11, 49, 42, 0.32);
   border-radius: 18px;
   transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.3s ease;
-  padding: 28px 32px 26px;
-  min-height: 190px;
+  padding: 24px 26px 20px;
+  min-height: 176px;
   display: grid;
-  grid-template-rows: 44px 30px 1fr;
+  grid-template-rows: 40px 26px 1fr auto;
   align-items: start;
-  gap: 16px;
+  gap: 12px;
   overflow: hidden;
 }
 :deep(.metric-card):hover { transform: translateY(-3px); box-shadow: 0 24px 46px -24px rgba(11, 49, 42, 0.38); }
 :deep(.metric-card::after) { display: none; }
+:deep(.metric-card small) {
+  color: #8a9793;
+  font-size: 12px;
+  font-weight: 500;
+}
 :deep(.metric-icon) {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   margin: 0;
   color: #195f55;
-  font-size: 22px;
+  font-size: 20px;
   background: #eef5f3;
   border-radius: 11px;
   box-shadow: none;
 }
 :deep(.metric-label) {
   color: #49645d;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 500;
   line-height: 1.4;
 }
@@ -105,19 +136,19 @@ function formatDate(value: string) {
   -webkit-text-fill-color: currentColor;
 }
 :deep(.metric-value-number) {
-  font-size: 58px;
+  font-size: 44px;
   letter-spacing: -1px;
 }
 :deep(.metric-value-unit) {
   color: #153a32;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: 0;
 }
 @media (max-width: 1080px) {
-  .metrics-grid { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-  :deep(.metric-card) { min-height: 172px; padding: 24px; }
-  :deep(.metric-value-number) { font-size: 48px; }
+  .metrics-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  :deep(.metric-card) { min-height: 160px; padding: 20px; }
+  :deep(.metric-value-number) { font-size: 38px; }
 }
 
 /* 面板深度定制 */

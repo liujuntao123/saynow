@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
@@ -17,6 +17,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   addVocabularyTerms: [terms: string[]];
+  updateVocabulary: [item: VocabularyItem];
   deleteVocabulary: [id: number];
   addStyle: [item: StylePrompt];
   updateStyle: [item: StylePrompt];
@@ -24,10 +25,16 @@ const emit = defineEmits<{
   updatePreferences: [preferences: PersonalizationPreferences];
   updateLearningEngine: [config: LearningEngineConfig];
   runLearningEngine: [];
+  updateRuleStatus: [payload: { id: number; status: string }];
+  deleteRule: [id: number];
+  clearRules: [];
+  clearCorrections: [];
 }>();
 
 const activeTab = ref<'vocabulary' | 'styles' | 'features'>('vocabulary');
 const vocabularyText = ref('');
+const editingVocabularyId = ref<number | null>(null);
+const vocabularyAliasDraft = ref('');
 const styleForm = reactive<StylePrompt>({ id: 0, name: '', prompt: '', enabled: true });
 const selectedStyleId = ref<number | null>(null);
 const preferencesForm = reactive<PersonalizationPreferences>({ removeTrailingPeriod: false });
@@ -41,6 +48,12 @@ const learningEngineForm = reactive<LearningEngineConfig>({
   minNewCorrections: 5,
   idleSeconds: 30,
 });
+
+/** 识别提示词只取最近 30 条启用词；超过时提示用户旧词条不会生效。 */
+const PROMPT_VOCABULARY_LIMIT = 30;
+const enabledVocabularyCount = computed(() => props.vocabulary.filter((item) => item.enabled).length);
+const vocabularyOverLimit = computed(() => enabledVocabularyCount.value > PROMPT_VOCABULARY_LIMIT);
+
 watch(() => props.styles, (items) => {
   const current = items.find((item) => item.id === selectedStyleId.value);
   const next = current ?? items.find((item) => item.enabled) ?? items[0];
@@ -54,9 +67,27 @@ watch(() => props.learningEngineConfig, (config) => {
 }, { immediate: true });
 
 function selectStyle(item: StylePrompt) { selectedStyleId.value = item.id; Object.assign(styleForm, item); }
+/** 行内开关：点击直接切换该风格的启用状态并保存。 */
+function toggleStyleEnabled(item: StylePrompt) {
+  emit('updateStyle', { ...item, enabled: !item.enabled });
+}
 function submitVocabulary() {
   const terms = vocabularyText.value.split('\n').map((term) => term.trim()).filter(Boolean);
   if (!terms.length) return; emit('addVocabularyTerms', terms); vocabularyText.value = '';
+}
+function beginVocabularyEdit(item: VocabularyItem) {
+  editingVocabularyId.value = item.id;
+  vocabularyAliasDraft.value = item.alias;
+}
+function commitVocabularyEdit(item: VocabularyItem) {
+  if (editingVocabularyId.value !== item.id) return;
+  const alias = vocabularyAliasDraft.value.trim();
+  editingVocabularyId.value = null;
+  if (alias === item.alias) return;
+  emit('updateVocabulary', { ...item, alias });
+}
+function cancelVocabularyEdit() {
+  editingVocabularyId.value = null;
 }
 function submitStyle() {
   if (!styleForm.name.trim() || !styleForm.prompt.trim()) return;
@@ -76,9 +107,23 @@ function saveLearningEngine() {
     baseUrl: learningEngineForm.baseUrl.trim(),
     model: learningEngineForm.model.trim(),
     apiKeyRef: learningEngineForm.apiKeyRef.trim(),
-    runMode: 'llmAssist',
+    runMode: learningEngineForm.runMode === 'localOnly' ? 'localOnly' : 'llmAssist',
     minNewCorrections: Number(learningEngineForm.minNewCorrections) || 5,
     idleSeconds: Number(learningEngineForm.idleSeconds) || 30,
+  });
+}
+const ruleActive = (rule: LearningRule) => ['candidate', 'active', 'pinned'].includes(rule.status);
+/** 停用/恢复规则。恢复到 candidate（继续参与识别提示）。 */
+function toggleRuleDisabled(rule: LearningRule) {
+  emit('updateRuleStatus', {
+    id: rule.id,
+    status: rule.status === 'disabled' ? 'candidate' : 'disabled',
+  });
+}
+function togglePinRule(rule: LearningRule) {
+  emit('updateRuleStatus', {
+    id: rule.id,
+    status: rule.status === 'pinned' ? 'candidate' : 'pinned',
   });
 }
 function learningRuleStatusText(status: string) {
@@ -146,9 +191,29 @@ function learningRuleEvidenceText(rule: LearningRule) {
       </form>
 
       <UiPanel class="list-panel art-card clean-panel" title="专属词库" :meta="`收录 ${vocabulary.length} 词`" icon="database">
+        <p v-if="vocabularyOverLimit" class="vocabulary-limit-hint">
+          <AppIcon name="alert-circle" />
+          已启用 {{ enabledVocabularyCount }} 个词条，识别时仅使用最近 {{ PROMPT_VOCABULARY_LIMIT }} 条，建议清理不常用词。
+        </p>
         <div v-if="vocabulary.length" class="vocabulary-tabs bubble-cloud">
           <div v-for="item in vocabulary" :key="item.id" class="vocabulary-tab bubble-tag" :class="{ disabled: !item.enabled }">
-            <strong>{{ item.term }}</strong>
+            <template v-if="editingVocabularyId === item.id">
+              <strong>{{ item.term }}</strong>
+              <input
+                v-model="vocabularyAliasDraft"
+                class="alias-input"
+                placeholder="别名/读音"
+                @keydown.enter.prevent="commitVocabularyEdit(item)"
+                @keydown.escape.prevent="cancelVocabularyEdit"
+                @blur="commitVocabularyEdit(item)"
+              />
+            </template>
+            <template v-else>
+              <button type="button" class="bubble-term" :title="item.alias ? `别名：${item.alias}（点击编辑）` : '点击编辑别名'" @click="beginVocabularyEdit(item)">
+                <strong>{{ item.term }}</strong>
+                <em v-if="item.alias">{{ item.alias }}</em>
+              </button>
+            </template>
             <button type="button" class="bubble-close" aria-label="删除" title="删除" @click="emit('deleteVocabulary', item.id)">
               <AppIcon name="x" />
             </button>
@@ -164,19 +229,30 @@ function learningRuleEvidenceText(rule: LearningRule) {
           <button class="secondary-button icon-only-button" type="button" @click="createStyleDraft"><AppIcon name="plus" /></button>
         </template>
         <div v-if="styles.length" class="managed-list style-list">
-          <button
+          <div
             v-for="item in styles"
             :key="item.id"
             class="managed-list-item style-item"
             :class="{ active: selectedStyleId === item.id }"
-            type="button" @click="selectStyle(item)"
+            role="button"
+            tabindex="0"
+            @click="selectStyle(item)"
+            @keydown.enter.prevent="selectStyle(item)"
           >
             <span class="style-info">
               <strong>{{ item.name }}</strong>
               <em>{{ item.prompt }}</em>
             </span>
-            <div class="ios-switch" :class="{ on: item.enabled }"></div>
-          </button>
+            <button
+              type="button"
+              class="ios-switch"
+              :class="{ on: item.enabled }"
+              role="switch"
+              :aria-checked="item.enabled"
+              :aria-label="item.enabled ? `停用「${item.name}」` : `启用「${item.name}」`"
+              @click.stop="toggleStyleEnabled(item)"
+            ></button>
+          </div>
         </div>
         <EmptyState v-else icon="spark" title="暂无提示词" description="用自然语言定义你想要的整理风格。" />
       </UiPanel>
@@ -226,18 +302,33 @@ function learningRuleEvidenceText(rule: LearningRule) {
           </button>
 
           <div class="form-grid learning-form-grid">
-            <label>
-              供应商 <input v-model="learningEngineForm.provider" placeholder="OpenAI / Qwen / MiMo" />
-            </label>
-            <label>
-              模型 <input v-model="learningEngineForm.model" placeholder="gpt-4.1-mini" />
-            </label>
             <label class="field-span-2">
-              URL <input v-model="learningEngineForm.baseUrl" placeholder="https://api..." />
+              整理方式
+              <div class="run-mode-options">
+                <label class="run-mode-option">
+                  <input v-model="learningEngineForm.runMode" type="radio" value="llmAssist" />
+                  <span><strong>LLM 整理</strong><em>用独立文本模型提炼规则，效果更好，需要配置模型</em></span>
+                </label>
+                <label class="run-mode-option">
+                  <input v-model="learningEngineForm.runMode" type="radio" value="localOnly" />
+                  <span><strong>本地整理</strong><em>只用内置启发式从纠错中提炼，无需额外配置</em></span>
+                </label>
+              </div>
             </label>
-            <label class="field-span-2">
-              API Key <input v-model="learningEngineForm.apiKeyRef" type="password" placeholder="credential-manager:learning" />
-            </label>
+            <template v-if="learningEngineForm.runMode === 'llmAssist'">
+              <label>
+                供应商 <input v-model="learningEngineForm.provider" placeholder="OpenAI / Qwen / MiMo" />
+              </label>
+              <label>
+                模型 <input v-model="learningEngineForm.model" placeholder="gpt-4.1-mini" />
+              </label>
+              <label class="field-span-2">
+                URL <input v-model="learningEngineForm.baseUrl" placeholder="https://api..." />
+              </label>
+              <label class="field-span-2">
+                API Key <input v-model="learningEngineForm.apiKeyRef" type="password" placeholder="粘贴您的 API Key" />
+              </label>
+            </template>
             <label>
               触发样本 <input v-model.number="learningEngineForm.minNewCorrections" type="number" min="1" max="100" />
             </label>
@@ -249,13 +340,13 @@ function learningRuleEvidenceText(rule: LearningRule) {
           <div class="provider-form-actions form-footer">
             <span class="feature-toggle-copy learning-status">
               <strong>{{ learningEngineForm.enabled ? '已启用' : '未启用' }}</strong>
-              <em>{{ learningEngineForm.enabled ? '保存后，后续整理任务将使用此模型。' : '关闭时只记录纠错和历史，不请求学习模型。' }}</em>
+              <em>{{ learningEngineForm.enabled ? '保存后，后续整理任务将使用此配置。' : '关闭时只记录纠错和历史，不做整理。' }}</em>
             </span>
-            <button class="primary-button compact-action-button icon-only-button" type="submit" :disabled="saving" title="保存学习引擎">
-              <AppIcon :name="saving ? 'activity' : 'save'" />
+            <button class="primary-button compact-action-button" type="submit" :disabled="saving">
+              <AppIcon name="save" /> 保存
             </button>
-            <button class="secondary-button compact-action-button icon-only-button" type="button" :disabled="saving" title="立即整理" @click="emit('runLearningEngine')">
-              <AppIcon name="activity" />
+            <button class="secondary-button compact-action-button" type="button" :disabled="saving" @click="emit('runLearningEngine')">
+              <AppIcon name="activity" /> 立即整理
             </button>
           </div>
         </form>
@@ -279,8 +370,18 @@ function learningRuleEvidenceText(rule: LearningRule) {
       </UiPanel>
 
       <UiPanel class="rules-panel art-card clean-panel" title="学习规则" :meta="`${learningRules.length} 条`" icon="database">
+        <template #headerActions>
+          <button
+            v-if="learningRules.length"
+            class="panel-clear-button"
+            type="button"
+            @click="emit('clearRules')"
+          >
+            <AppIcon name="trash" /> 清空
+          </button>
+        </template>
         <div v-if="learningRules.length" class="learning-rule-list">
-          <div v-for="rule in learningRules" :key="rule.id" class="learning-rule-item">
+          <div v-for="rule in learningRules" :key="rule.id" class="learning-rule-item" :class="{ 'rule-disabled': rule.status === 'disabled' || rule.status === 'rejected' }">
             <div class="learning-rule-head">
               <strong>{{ rule.description }}</strong>
               <span class="rule-badge-wrap">
@@ -298,12 +399,40 @@ function learningRuleEvidenceText(rule: LearningRule) {
               <span v-if="rule.fromText || rule.toText">倾向：{{ rule.fromText || '∅' }} -> {{ rule.toText || '∅' }}</span>
               <span v-if="learningRuleEvidenceText(rule)">{{ learningRuleEvidenceText(rule) }}</span>
             </p>
+            <div class="rule-actions">
+              <button type="button" class="rule-action-button" @click="toggleRuleDisabled(rule)">
+                {{ rule.status === 'disabled' ? '恢复' : '停用' }}
+              </button>
+              <button
+                v-if="rule.status !== 'disabled' && rule.status !== 'rejected'"
+                type="button"
+                class="rule-action-button"
+                :class="{ pinned: rule.status === 'pinned' }"
+                @click="togglePinRule(rule)"
+              >
+                {{ rule.status === 'pinned' ? '取消固定' : '固定' }}
+              </button>
+              <span v-if="ruleActive(rule) && rule.risk !== 'high'" class="rule-in-use">参与识别中</span>
+              <button type="button" class="rule-action-button danger" @click="emit('deleteRule', rule.id)">
+                删除
+              </button>
+            </div>
           </div>
         </div>
         <EmptyState v-else icon="database" title="暂无学习规则" description="保存纠错或积累识别历史后，可由学习引擎整理为候选规则。" />
       </UiPanel>
 
       <UiPanel class="corrections-panel art-card clean-panel" title="纠错记录" :meta="`${correctionRecords.length} 条`" icon="fileText">
+        <template #headerActions>
+          <button
+            v-if="correctionRecords.length"
+            class="panel-clear-button"
+            type="button"
+            @click="emit('clearCorrections')"
+          >
+            <AppIcon name="trash" /> 清空
+          </button>
+        </template>
         <div v-if="correctionRecords.length" class="correction-record-list">
           <div v-for="record in correctionRecords" :key="record.id" class="correction-record-item">
             <div class="correction-record-head">
@@ -414,6 +543,12 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .field-span-2 { grid-column: 1 / -1; }
 
 /* 词汇气泡 */
+.vocabulary-limit-hint {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 12px;
+  padding: 10px 14px; border-radius: 10px; background: #f7edcf; color: #9a6a16;
+  font-size: 12px; line-height: 1.5; flex: 0 0 auto;
+}
+.vocabulary-limit-hint .app-icon { flex: 0 0 auto; width: 14px; height: 14px; }
 .bubble-cloud { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 10px; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; scrollbar-gutter: stable; }
 .bubble-tag {
   display: inline-flex; align-items: center; background: #fff; border: 1px solid rgba(0,0,0,0.08);
@@ -421,6 +556,16 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 }
 .bubble-tag:hover { transform: translateY(-2px); border-color: #0f8f83; }
 .bubble-tag strong { font-size: 14px; font-weight: 500; color: #333; }
+.bubble-term {
+  display: inline-flex; align-items: baseline; gap: 6px; border: none; background: transparent;
+  padding: 0; cursor: pointer; font-family: inherit;
+}
+.bubble-term em { font-size: 12px; color: #86868b; font-style: normal; }
+.alias-input {
+  width: 120px; margin-left: 8px; padding: 3px 8px; font-size: 12px;
+  border: 1px solid rgba(15,143,131,0.4); border-radius: 8px; background: #fff;
+}
+.alias-input:focus { box-shadow: 0 0 0 2px rgba(15,143,131,0.12); }
 .bubble-close {
   width: 24px; height: 24px; border-radius: 50%; background: #f5f5f5; color: #888; border: none;
   display: flex; align-items: center; justify-content: center; margin-left: 8px;
@@ -432,18 +577,21 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .style-item {
   display: flex; justify-content: space-between; align-items: center; padding: 16px 20px;
   background: transparent; border: 1px solid #f0f0f5; border-radius: 16px; text-align: left; transition: all 0.3s; width: 100%;
+  cursor: pointer; outline: none;
 }
 .style-item:hover { background: #fafafa; }
+.style-item:focus-visible { border-color: #0f8f83; box-shadow: 0 0 0 3px rgba(15,143,131,0.14); }
 .style-item.active { background: #fff; border-color: #0f8f83; box-shadow: 0 4px 16px rgba(15,143,131,0.08); }
 .style-info { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
 .style-info strong { font-size: 15px; font-weight: 600; color: #1d1d1f; }
 .style-info em { font-size: 13px; color: #86868b; font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* iOS Switch */
-.ios-switch { width: 44px; height: 24px; border-radius: 12px; background: #e5e5ea; position: relative; transition: background 0.3s; flex-shrink: 0; }
+.ios-switch { width: 44px; height: 24px; border-radius: 12px; background: #e5e5ea; position: relative; transition: background 0.3s; flex-shrink: 0; border: none; cursor: pointer; padding: 0; }
 .ios-switch::after { content:''; position:absolute; top:2px; left:2px; width:20px; height:20px; background:#fff; border-radius:50%; transition:transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 .ios-switch.on { background: #34c759; }
 .ios-switch.on::after { transform: translateX(20px); }
+button.ios-switch:focus-visible { box-shadow: 0 0 0 3px rgba(15,143,131,0.24); }
 
 .feature-panel { max-width: none; }
 .learning-panel { grid-column: 1; grid-row: 1 / span 3; min-height: 0; align-self: start; }
@@ -454,6 +602,35 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .feature-panel, .rules-panel, .corrections-panel { grid-column: 2; min-width: 0; }
 .learning-rule-list { display: grid; gap: 10px; max-height: 260px; overflow-y: auto; padding-right: 4px; scrollbar-gutter: stable; }
 .learning-rule-item { display: grid; gap: 8px; min-width: 0; padding: 14px; border-radius: 14px; background: #fafafa; border: 1px solid #f0f0f5; }
+.learning-rule-item.rule-disabled { opacity: 0.6; }
+.rule-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.rule-action-button {
+  border: 1px solid rgba(0,0,0,0.08); background: #fff; color: #62706c; border-radius: 8px;
+  padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s ease;
+}
+.rule-action-button:hover { border-color: #0f8f83; color: #0f8f83; }
+.rule-action-button.pinned { border-color: rgba(15,143,131,0.4); background: rgba(15,143,131,0.08); color: #08776f; }
+.rule-action-button.danger:hover { border-color: #c84d4d; color: #c84d4d; background: #fdf3f2; }
+.rule-in-use { margin-left: auto; font-size: 11px; color: #08776f; font-weight: 600; }
+.panel-clear-button {
+  display: inline-flex; align-items: center; gap: 5px; border: none; cursor: pointer;
+  background: transparent; color: #8a9793; font-size: 12px; font-weight: 600;
+  border-radius: 8px; padding: 5px 10px; transition: all 0.2s ease;
+}
+.panel-clear-button:hover { background: #f8e6e4; color: #c84d4d; }
+.panel-clear-button .app-icon { width: 13px; height: 13px; }
+/* 学习引擎整理方式选择 */
+.run-mode-options { display: grid; gap: 8px; }
+.run-mode-option {
+  display: flex; flex-direction: row; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border: 1px solid #f0f0f5; border-radius: 12px; cursor: pointer; transition: all 0.2s ease;
+}
+.run-mode-option:hover { border-color: rgba(15,143,131,0.3); }
+.run-mode-option:has(input:checked) { border-color: #0f8f83; background: rgba(15,143,131,0.04); }
+.run-mode-option input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: #0f8f83; cursor: pointer; }
+.run-mode-option span { display: grid; gap: 3px; }
+.run-mode-option strong { font-size: 13px; color: #1d1d1f; font-weight: 600; }
+.run-mode-option em { font-size: 12px; color: #86868b; font-style: normal; line-height: 1.45; }
 .learning-rule-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
 .learning-rule-head strong { min-width: 0; color: #1d1d1f; font-size: 14px; line-height: 1.45; font-weight: 700; overflow-wrap: anywhere; }
 .learning-rule-item p { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0; color: #62706c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

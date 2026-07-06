@@ -7,14 +7,19 @@ import { writeRuntimeLog } from './api/tauri';
 
 type OverlayState = 'recording' | 'processing' | 'error' | 'correctionPrompt' | 'correctionEdit';
 
+const MAX_RECORDING_SECONDS = 120;
+const RECORDING_WARNING_SECONDS = 110;
+
 const state = ref<OverlayState>('recording');
 const transcript = ref('');
+const recordingSeconds = ref(0);
 const correctionRecordId = ref<number | null>(null);
 const correctionRawText = ref('');
 const correctionDraft = ref('');
 let unlistenState: (() => void) | undefined;
 let unlistenTranscript: (() => void) | undefined;
 let unlistenReset: (() => void) | undefined;
+let recordingTimer: ReturnType<typeof window.setInterval> | null = null;
 
 const label = computed(() => {
   if (state.value === 'correctionPrompt') return '已输入';
@@ -24,10 +29,20 @@ const label = computed(() => {
   return '正在录音';
 });
 
+const recordingClock = computed(() => {
+  const minutes = Math.floor(recordingSeconds.value / 60);
+  const seconds = recordingSeconds.value % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+});
+const nearRecordingLimit = computed(
+  () => state.value === 'recording' && recordingSeconds.value >= RECORDING_WARNING_SECONDS,
+);
+
 const transcriptPreview = computed(() => transcript.value.trim());
 const correctionPreview = computed(() => correctionRawText.value.trim());
 const stripText = computed(() => {
   if (state.value === 'correctionPrompt') return correctionPreview.value || label.value;
+  if (state.value === 'error') return '识别失败，可点击重试';
   return transcriptPreview.value || label.value;
 });
 const ariaLabel = computed(() => {
@@ -47,6 +62,20 @@ function formatLogDetails(details: unknown) {
   } catch {
     return String(details);
   }
+}
+
+function startRecordingClock() {
+  stopRecordingClock();
+  recordingSeconds.value = 0;
+  recordingTimer = window.setInterval(() => {
+    recordingSeconds.value = Math.min(recordingSeconds.value + 1, MAX_RECORDING_SECONDS);
+  }, 1000);
+}
+
+function stopRecordingClock() {
+  if (!recordingTimer) return;
+  window.clearInterval(recordingTimer);
+  recordingTimer = null;
 }
 
 function resetCorrection() {
@@ -84,6 +113,16 @@ async function undoCorrectionTarget() {
   await emitTo('main', 'correction-undo');
 }
 
+async function retryRecognition() {
+  await emitTo('main', 'recognition-retry');
+}
+
+/** 悬停时通知主窗口暂停纠错浮窗自动关闭。 */
+async function notifyHover(hovering: boolean) {
+  if (state.value !== 'correctionPrompt') return;
+  await emitTo('main', 'correction-hover', { hovering }).catch(() => undefined);
+}
+
 function handleEditKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault();
@@ -111,6 +150,11 @@ onMounted(async () => {
       mountedMs: Math.round(performance.now() - mountedAt),
     });
     state.value = event.payload.state;
+    if (event.payload.state === 'recording') {
+      startRecordingClock();
+    } else {
+      stopRecordingClock();
+    }
     if (event.payload.state === 'correctionPrompt') {
       correctionRecordId.value = event.payload.recordId ?? null;
       correctionRawText.value = event.payload.text ?? '';
@@ -132,6 +176,8 @@ onMounted(async () => {
     debugLog('reset event received');
     state.value = 'recording';
     transcript.value = '';
+    stopRecordingClock();
+    recordingSeconds.value = 0;
     resetCorrection();
   });
 });
@@ -139,6 +185,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.documentElement.classList.remove('recorder-root');
   document.body.classList.remove('recorder-body');
+  stopRecordingClock();
   unlistenState?.();
   unlistenTranscript?.();
   unlistenReset?.();
@@ -151,6 +198,8 @@ onBeforeUnmount(() => {
     :class="[state, { 'has-transcript': transcriptPreview, 'has-correction': correctionPreview }]"
     role="status"
     :aria-label="ariaLabel"
+    @mouseenter="notifyHover(true)"
+    @mouseleave="notifyHover(false)"
   >
     <div v-if="state !== 'correctionEdit'" class="hud-strip">
       <div class="hud-orb">
@@ -160,6 +209,10 @@ onBeforeUnmount(() => {
           <AppIcon :name="state === 'processing' ? 'activity' : state === 'correctionPrompt' ? 'text' : 'mic'" class="orb-icon" />
         </div>
       </div>
+
+      <span v-if="state === 'recording'" class="recording-clock" :class="{ warning: nearRecordingLimit }">
+        {{ recordingClock }}
+      </span>
 
       <div class="strip-content">
         <span class="strip-text">{{ stripText }}</span>
@@ -176,6 +229,13 @@ onBeforeUnmount(() => {
         </button>
         <button type="button" class="correction-icon-button" aria-label="关闭" @click="dismissCorrection">
           <AppIcon name="x" />
+        </button>
+      </div>
+
+      <div v-if="state === 'error'" class="correction-actions">
+        <button type="button" class="correction-button" @click="retryRecognition">
+          <AppIcon name="undo" />
+          <span>重试</span>
         </button>
       </div>
     </div>
@@ -227,10 +287,32 @@ onBeforeUnmount(() => {
   gap: 8px;
   overflow: hidden;
   border-radius: 20px;
-  border: 1px solid transparent;
+  /* 中性描边 + 投影：避免浮条在白色应用背景上"隐形" */
+  border: 1px solid rgba(15, 23, 42, 0.08);
   padding: 4px 5px;
   background: #ffffff;
-  box-shadow: none;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.16);
+}
+
+.recording-clock {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #0f8f83;
+  background: rgba(15, 143, 131, 0.08);
+  border-radius: 8px;
+  padding: 3px 7px;
+}
+
+.recording-clock.warning {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+  animation: clock-blink 1s step-end infinite;
+}
+
+@keyframes clock-blink {
+  50% { opacity: 0.45; }
 }
 
 .hud-orb {
@@ -470,9 +552,9 @@ onBeforeUnmount(() => {
   width: min(600px, calc(100vw - 20px));
   padding: 10px;
   border-radius: 12px;
-  border: 1px solid transparent;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   background: #ffffff;
-  box-shadow: none;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.16);
 }
 
 .correction-textarea {

@@ -538,6 +538,45 @@ impl AppDb {
         Ok(())
     }
 
+    pub fn clear_correction_records(&self) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM correction_records", [])?;
+        Ok(())
+    }
+
+    pub fn delete_recognition_record(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM recognition_records WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn clear_recognition_records(&self) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM recognition_records", [])?;
+        Ok(())
+    }
+
+    pub fn update_learning_rule_status(&self, id: i64, status: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            "UPDATE learning_rules SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status, Utc::now().to_rfc3339(), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_learning_rule(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM learning_rules WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn clear_learning_rules(&self) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute("DELETE FROM learning_rules", [])?;
+        Ok(())
+    }
+
     pub fn upsert_learning_rule(&self, rule: &LearningRule) -> Result<LearningRule> {
         let now = Utc::now().to_rfc3339();
         let created_at = if rule.created_at.trim().is_empty() {
@@ -688,17 +727,51 @@ impl AppDb {
         let mut conn = self.conn.lock().expect("database mutex poisoned");
         let tx = conn.transaction()?;
         {
-            let mut stmt = tx.prepare(
+            // 按词条去重：重复添加只是重新启用，避免词库堆积重复行。
+            let mut exists_stmt = tx.prepare("SELECT id FROM vocabulary WHERE term = ?1 LIMIT 1")?;
+            let mut insert_stmt = tx.prepare(
                 "INSERT INTO vocabulary (term, alias, category, note, enabled) VALUES (?1, '', '', '', 1)",
             )?;
+            let mut enable_stmt = tx.prepare("UPDATE vocabulary SET enabled = 1 WHERE id = ?1")?;
             for term in terms {
                 let normalized = term.trim();
-                if !normalized.is_empty() {
-                    stmt.execute([normalized])?;
+                if normalized.is_empty() {
+                    continue;
+                }
+                let existing = exists_stmt
+                    .query_row([normalized], |row| row.get::<_, i64>(0))
+                    .map(Some)
+                    .or_else(|error| match error {
+                        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                        error => Err(error),
+                    })?;
+                match existing {
+                    Some(id) => {
+                        enable_stmt.execute([id])?;
+                    }
+                    None => {
+                        insert_stmt.execute([normalized])?;
+                    }
                 }
             }
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_vocabulary(&self, item: &VocabularyItem) -> Result<()> {
+        let conn = self.conn.lock().expect("database mutex poisoned");
+        conn.execute(
+            "UPDATE vocabulary SET term = ?1, alias = ?2, category = ?3, note = ?4, enabled = ?5 WHERE id = ?6",
+            params![
+                item.term,
+                item.alias,
+                item.category,
+                item.note,
+                if item.enabled { 1 } else { 0 },
+                item.id
+            ],
+        )?;
         Ok(())
     }
 

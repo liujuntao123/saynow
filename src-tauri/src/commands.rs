@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::{io::BufRead, sync::OnceLock, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,12 +28,53 @@ pub struct DashboardData {
     pub platform: PlatformStatus,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RecognitionAudioInput {
     pub audio_base64: String,
     pub duration_seconds: u32,
     pub mime_type: String,
+}
+
+/// 识别失败时保留的最后一段音频，供"重试"使用，避免用户重新口述。
+#[derive(Default)]
+pub struct LastRecognitionAudio(std::sync::Mutex<Option<RecognitionAudioInput>>);
+
+impl LastRecognitionAudio {
+    pub fn store(&self, input: &RecognitionAudioInput) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = Some(input.clone());
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = None;
+        }
+    }
+
+    pub fn take_for_retry(&self) -> Option<RecognitionAudioInput> {
+        self.0.lock().ok().and_then(|guard| guard.clone())
+    }
+}
+
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const RECOGNITION_TIMEOUT: Duration = Duration::from_secs(90);
+const LEARNING_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// 全局共享 HTTP 客户端：复用连接池/TLS 会话，并统一设置连接超时，
+/// 避免供应商端点挂起时识别流程无限期卡死。
+fn http_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .build()
+                .map_err(|error| format!("无法初始化 HTTP 客户端：{error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,9 +85,11 @@ pub struct RecorderTranscriptPayload {
 }
 
 pub fn dashboard_data(db: &AppDb) -> Result<DashboardData, String> {
-    let records = db.list_records(50).map_err(|error| error.to_string())?;
+    // 统计基于更长的历史窗口，展示列表只取最近 50 条。
+    let stats_records = db.list_records(2000).map_err(|error| error.to_string())?;
+    let records = stats_records.iter().take(50).cloned().collect();
     Ok(DashboardData {
-        stats: aggregate_usage_stats(&records),
+        stats: aggregate_usage_stats(&stats_records),
         records,
         platform: current_platform_status(),
     })
@@ -91,6 +134,55 @@ pub fn select_provider_config_data(db: &AppDb, id: i64) -> Result<AppConfig, Str
         .map_err(|error| error.to_string())
 }
 
+const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 用最短对话请求验证供应商 base_url / API Key / 模型名是否可用。
+/// 返回人类可读的成功消息；失败时返回带原因的错误。
+pub fn test_provider_connection_data(provider: ProviderConfig) -> Result<String, String> {
+    if !provider.has_complete_provider() {
+        return Err("请先填写完整的供应商、URL、模型和 API Key。".to_string());
+    }
+    let api_key = resolve_api_key(&provider.api_key_ref)?;
+    let url = format!(
+        "{}/chat/completions",
+        provider.base_url.trim().trim_end_matches('/')
+    );
+    let payload = serde_json::json!({
+        "model": provider.model,
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_completion_tokens": 1,
+        "stream": false
+    });
+    let request = http_client()?.post(&url).timeout(PROVIDER_TEST_TIMEOUT);
+    let request = if provider.provider.eq_ignore_ascii_case("mimo")
+        || provider
+            .base_url
+            .to_ascii_lowercase()
+            .contains("xiaomimimo.com")
+    {
+        request.header("api-key", api_key)
+    } else {
+        request.bearer_auth(api_key)
+    };
+    let started_at = std::time::Instant::now();
+    let response = request
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("连接失败：{error}"))?;
+    let status = response.status();
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if status.is_success() {
+        return Ok(format!("连接成功（{elapsed_ms}ms）"));
+    }
+    let body = response.text().unwrap_or_default();
+    let summary = body.chars().take(300).collect::<String>();
+    Err(match status.as_u16() {
+        401 | 403 => format!("鉴权失败（HTTP {status}），请检查 API Key。{summary}"),
+        404 => format!("接口或模型不存在（HTTP {status}），请检查 URL 和模型名。{summary}"),
+        _ => format!("请求失败（HTTP {status}）：{summary}"),
+    })
+}
+
 pub fn delete_provider_config_data(db: &AppDb, id: i64) -> Result<Vec<ProviderConfig>, String> {
     db.delete_provider_config(id)
         .map_err(|error| error.to_string())?;
@@ -109,6 +201,59 @@ pub fn list_correction_records_data(db: &AppDb) -> Result<Vec<CorrectionRecord>,
 pub fn list_learning_rules_data(db: &AppDb) -> Result<Vec<LearningRule>, String> {
     db.list_learning_rules(200)
         .map_err(|error| error.to_string())
+}
+
+const ALLOWED_RULE_STATUSES: [&str; 6] = [
+    "observed",
+    "candidate",
+    "active",
+    "pinned",
+    "rejected",
+    "disabled",
+];
+
+pub fn update_learning_rule_status_data(
+    db: &AppDb,
+    id: i64,
+    status: String,
+) -> Result<Vec<LearningRule>, String> {
+    let status = status.trim();
+    if !ALLOWED_RULE_STATUSES.contains(&status) {
+        return Err(format!("不支持的规则状态：{status}"));
+    }
+    db.update_learning_rule_status(id, status)
+        .map_err(|error| error.to_string())?;
+    list_learning_rules_data(db)
+}
+
+pub fn delete_learning_rule_data(db: &AppDb, id: i64) -> Result<Vec<LearningRule>, String> {
+    db.delete_learning_rule(id)
+        .map_err(|error| error.to_string())?;
+    list_learning_rules_data(db)
+}
+
+pub fn clear_learning_rules_data(db: &AppDb) -> Result<Vec<LearningRule>, String> {
+    db.clear_learning_rules()
+        .map_err(|error| error.to_string())?;
+    list_learning_rules_data(db)
+}
+
+pub fn clear_correction_records_data(db: &AppDb) -> Result<Vec<CorrectionRecord>, String> {
+    db.clear_correction_records()
+        .map_err(|error| error.to_string())?;
+    list_correction_records_data(db)
+}
+
+pub fn delete_record_data(db: &AppDb, id: i64) -> Result<Vec<RecognitionRecord>, String> {
+    db.delete_recognition_record(id)
+        .map_err(|error| error.to_string())?;
+    list_records_data(db)
+}
+
+pub fn clear_records_data(db: &AppDb) -> Result<Vec<RecognitionRecord>, String> {
+    db.clear_recognition_records()
+        .map_err(|error| error.to_string())?;
+    list_records_data(db)
 }
 
 pub fn refresh_learning_rules_data(db: &AppDb) -> Result<Vec<LearningRule>, String> {
@@ -229,9 +374,10 @@ fn run_llm_learning(
         "{}/chat/completions",
         config.base_url.trim().trim_end_matches('/')
     );
-    let client = reqwest::blocking::Client::new();
+    let client = http_client()?;
     let response = client
         .post(&url)
+        .timeout(LEARNING_TIMEOUT)
         .bearer_auth(api_key)
         .json(&payload)
         .send()
@@ -344,6 +490,18 @@ pub fn add_vocabulary_terms_data(
 
 pub fn delete_vocabulary_data(db: &AppDb, id: i64) -> Result<Vec<VocabularyItem>, String> {
     db.delete_vocabulary(id)
+        .map_err(|error| error.to_string())?;
+    list_vocabulary_data(db)
+}
+
+pub fn update_vocabulary_data(
+    db: &AppDb,
+    item: VocabularyItem,
+) -> Result<Vec<VocabularyItem>, String> {
+    if item.term.trim().is_empty() {
+        return Err("词条不能为空。".to_string());
+    }
+    db.update_vocabulary(&item)
         .map_err(|error| error.to_string())?;
     list_vocabulary_data(db)
 }
@@ -555,7 +713,7 @@ where
         "[saynow] sending recognition request; url={} model={}",
         url, config.model
     );
-    let request = reqwest::blocking::Client::new().post(url);
+    let request = http_client()?.post(url).timeout(RECOGNITION_TIMEOUT);
     let request = if uses_mimo_api_key_header(config) {
         request.header("api-key", api_key)
     } else {
@@ -788,16 +946,65 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub fn update_learning_rule_status(
+        db: State<'_, AppDb>,
+        id: i64,
+        status: String,
+    ) -> Result<Vec<LearningRule>, String> {
+        update_learning_rule_status_data(&db, id, status)
+    }
+
+    #[tauri::command]
+    pub fn delete_learning_rule(db: State<'_, AppDb>, id: i64) -> Result<Vec<LearningRule>, String> {
+        delete_learning_rule_data(&db, id)
+    }
+
+    #[tauri::command]
+    pub fn clear_learning_rules(db: State<'_, AppDb>) -> Result<Vec<LearningRule>, String> {
+        clear_learning_rules_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn clear_correction_records(
+        db: State<'_, AppDb>,
+    ) -> Result<Vec<CorrectionRecord>, String> {
+        clear_correction_records_data(&db)
+    }
+
+    #[tauri::command]
+    pub fn delete_record(db: State<'_, AppDb>, id: i64) -> Result<Vec<RecognitionRecord>, String> {
+        delete_record_data(&db, id)
+    }
+
+    #[tauri::command]
+    pub fn clear_records(db: State<'_, AppDb>) -> Result<Vec<RecognitionRecord>, String> {
+        clear_records_data(&db)
+    }
+
+    #[tauri::command]
+    pub async fn test_provider_connection(provider: ProviderConfig) -> Result<String, String> {
+        tauri::async_runtime::spawn_blocking(move || test_provider_connection_data(provider))
+            .await
+            .map_err(|error| format!("测试任务执行失败：{error}"))?
+    }
+
+    #[tauri::command]
     pub fn refresh_learning_rules(db: State<'_, AppDb>) -> Result<Vec<LearningRule>, String> {
         refresh_learning_rules_data(&db)
     }
 
     #[tauri::command]
-    pub fn run_learning_engine(
-        db: State<'_, AppDb>,
+    pub async fn run_learning_engine<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
         force: bool,
     ) -> Result<Vec<LearningRule>, String> {
-        run_learning_engine_data(&db, force)
+        // 学习请求可能长达数十秒，放到阻塞线程池，避免卡住主线程。
+        tauri::async_runtime::spawn_blocking(move || {
+            let db = app.state::<AppDb>();
+            run_learning_engine_data(&db, force)
+        })
+        .await
+        .map_err(|error| format!("学习任务执行失败：{error}"))?
     }
 
     #[tauri::command]
@@ -824,6 +1031,14 @@ mod tauri_commands {
     #[tauri::command]
     pub fn delete_vocabulary(db: State<'_, AppDb>, id: i64) -> Result<Vec<VocabularyItem>, String> {
         delete_vocabulary_data(&db, id)
+    }
+
+    #[tauri::command]
+    pub fn update_vocabulary(
+        db: State<'_, AppDb>,
+        item: VocabularyItem,
+    ) -> Result<Vec<VocabularyItem>, String> {
+        update_vocabulary_data(&db, item)
     }
 
     #[tauri::command]
@@ -883,30 +1098,62 @@ mod tauri_commands {
     }
 
     #[tauri::command]
-    pub fn recognize_audio<R: tauri::Runtime>(
+    pub async fn recognize_audio<R: tauri::Runtime>(
         app: tauri::AppHandle<R>,
-        db: State<'_, AppDb>,
         input: RecognitionAudioInput,
     ) -> Result<RecognitionRecord, String> {
         crate::runtime_log::write_line("[saynow] tauri command recognize_audio invoked");
-        let stream_app = app.clone();
-        let result = recognize_audio_data_with_transcript(&db, input, move |text| {
-            let _ = stream_app.emit_to(
-                "recorder",
-                "recorder-transcript",
-                RecorderTranscriptPayload { text, done: false },
-            );
-        });
-        if let Ok(record) = &result {
-            let _ = app.emit_to(
-                "recorder",
-                "recorder-transcript",
-                RecorderTranscriptPayload {
-                    text: record.text.clone(),
-                    done: true,
-                },
-            );
-        }
+        recognize_audio_in_background(app, input).await
+    }
+
+    /// 用保留的上一段失败音频重试识别；无可重试音频时报错。
+    #[tauri::command]
+    pub async fn retry_last_recognition<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<RecognitionRecord, String> {
+        crate::runtime_log::write_line("[saynow] tauri command retry_last_recognition invoked");
+        let input = app
+            .state::<LastRecognitionAudio>()
+            .take_for_retry()
+            .ok_or_else(|| "没有可重试的录音。".to_string())?;
+        recognize_audio_in_background(app, input).await
+    }
+
+    async fn recognize_audio_in_background<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+        input: RecognitionAudioInput,
+    ) -> Result<RecognitionRecord, String> {
+        // 识别请求走阻塞线程池，主线程保持响应（窗口、托盘、热键事件不受阻塞）。
+        let task_app = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let db = task_app.state::<AppDb>();
+            let stream_app = task_app.clone();
+            let result = recognize_audio_data_with_transcript(&db, input.clone(), move |text| {
+                let _ = stream_app.emit_to(
+                    "recorder",
+                    "recorder-transcript",
+                    RecorderTranscriptPayload { text, done: false },
+                );
+            });
+            let last_audio = task_app.state::<LastRecognitionAudio>();
+            match &result {
+                Ok(record) => {
+                    last_audio.clear();
+                    let _ = task_app.emit_to(
+                        "recorder",
+                        "recorder-transcript",
+                        RecorderTranscriptPayload {
+                            text: record.text.clone(),
+                            done: true,
+                        },
+                    );
+                }
+                Err(_) => last_audio.store(&input),
+            }
+            result
+        })
+        .await
+        .map_err(|error| format!("识别任务执行失败：{error}"))?;
         result
     }
 
@@ -1070,15 +1317,23 @@ mod tauri_commands {
             save_provider_config,
             select_provider_config,
             delete_provider_config,
+            test_provider_connection,
             list_records,
+            delete_record,
+            clear_records,
             list_correction_records,
+            clear_correction_records,
             save_correction,
             list_learning_rules,
+            update_learning_rule_status,
+            delete_learning_rule,
+            clear_learning_rules,
             refresh_learning_rules,
             run_learning_engine,
             list_vocabulary,
             add_vocabulary,
             add_vocabulary_terms,
+            update_vocabulary,
             delete_vocabulary,
             list_style_prompts,
             add_style_prompt,
@@ -1089,6 +1344,7 @@ mod tauri_commands {
             get_learning_engine_config,
             save_learning_engine_config,
             recognize_audio,
+            retry_last_recognition,
             show_recorder_overlay_no_activate,
             show_recorder_overlay_focus,
             hide_recorder_overlay,

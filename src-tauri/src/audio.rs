@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    thread,
     time::Instant,
 };
 
@@ -14,15 +15,24 @@ use cpal::{
 };
 use serde::Serialize;
 
-#[derive(Default)]
+/// 原生录音器。
+///
+/// 冷启动（设备枚举 + IAudioClient 初始化）实测需要 4~5 秒，因此流建好后不销毁；
+/// 空闲时调用 `Stream::pause()`（WASAPI 内部是 `IAudioClient::Stop()`），
+/// 系统会话转为 inactive，"麦克风使用中"指示消失；
+/// 录音时 `play()` 只是 `IAudioClient::Start()`，毫秒级恢复，没有冷启动。
+#[derive(Default, Clone)]
 pub struct NativeAudioRecorder {
-    input: Mutex<Option<WarmInputStream>>,
+    inner: Arc<Mutex<Option<WarmInputStream>>>,
 }
 
 struct WarmInputStream {
-    _stream: Stream,
+    stream: Stream,
     samples: Arc<Mutex<Vec<i16>>>,
     recording: Arc<AtomicBool>,
+    /// 输入流错误回调置位；下次 start 前触发重建。
+    failed: Arc<AtomicBool>,
+    device_name: String,
     sample_rate: u32,
     channels: u16,
     started_at: Option<Instant>,
@@ -37,11 +47,10 @@ pub struct NativeRecordedAudio {
 }
 
 impl NativeAudioRecorder {
+    /// 预建输入流并立即暂停，让后续录音跳过 4~5 秒冷启动，
+    /// 同时保持空闲期间麦克风处于未使用状态。
     pub fn warm_up(&self) -> Result<(), String> {
-        let mut input = self
-            .input
-            .lock()
-            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
+        let mut input = self.lock_inner()?;
         if input.is_none() {
             *input = Some(create_warm_input_stream()?);
         }
@@ -49,12 +58,18 @@ impl NativeAudioRecorder {
     }
 
     pub fn start(&self) -> Result<(), String> {
-        let mut input = self
-            .input
-            .lock()
-            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
-        if input.is_none() {
+        let mut input = self.lock_inner()?;
+        let needs_rebuild = match input.as_ref() {
+            Some(stream) => stream.failed.load(Ordering::SeqCst),
+            None => true,
+        };
+        if needs_rebuild {
+            let rebuilt_at = Instant::now();
             *input = Some(create_warm_input_stream()?);
+            crate::runtime_log::write_line(&format!(
+                "[saynow] native audio stream cold-rebuilt in {}ms",
+                rebuilt_at.elapsed().as_millis()
+            ));
         }
         let input = input.as_mut().expect("input stream just initialized");
         if input.recording.load(Ordering::SeqCst) {
@@ -67,53 +82,56 @@ impl NativeAudioRecorder {
             .clear();
         input.started_at = Some(Instant::now());
         input.recording.store(true, Ordering::SeqCst);
+        input
+            .stream
+            .play()
+            .map_err(|error| format!("无法恢复原生录音流：{error}"))?;
         Ok(())
     }
 
     pub fn stop(&self) -> Result<Option<NativeRecordedAudio>, String> {
-        let mut input = self
-            .input
-            .lock()
-            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
-        let Some(input) = input.as_mut() else {
-            return Ok(None);
-        };
-        if !input.recording.swap(false, Ordering::SeqCst) {
-            return Ok(None);
-        }
+        let result = {
+            let mut input = self.lock_inner()?;
+            let Some(input) = input.as_mut() else {
+                return Ok(None);
+            };
+            if !input.recording.swap(false, Ordering::SeqCst) {
+                return Ok(None);
+            }
 
-        let duration_seconds = input
-            .started_at
-            .take()
-            .map(|started_at| started_at.elapsed().as_secs().max(1) as u32)
-            .unwrap_or(1);
-        let samples = {
-            let mut buffer = input
-                .samples
-                .lock()
-                .map_err(|_| "无法读取原生录音采样。".to_string())?;
-            let samples = buffer.clone();
-            buffer.clear();
-            samples
+            let duration_seconds = input
+                .started_at
+                .take()
+                .map(|started_at| duration_seconds_rounded(started_at))
+                .unwrap_or(1);
+            let samples = {
+                let mut buffer = input
+                    .samples
+                    .lock()
+                    .map_err(|_| "无法读取原生录音采样。".to_string())?;
+                let samples = buffer.clone();
+                buffer.clear();
+                samples
+            };
+            pause_stream_quietly(input);
+            if samples.is_empty() {
+                Ok(None)
+            } else {
+                let wav = encode_wav_pcm16(&samples, input.sample_rate, input.channels)
+                    .map_err(|error| format!("无法编码 WAV 音频：{error}"))?;
+                Ok(Some(NativeRecordedAudio {
+                    audio_base64: general_purpose::STANDARD.encode(wav),
+                    duration_seconds,
+                    mime_type: "audio/wav".to_string(),
+                }))
+            }
         };
-        if samples.is_empty() {
-            return Ok(None);
-        }
-
-        let wav = encode_wav_pcm16(&samples, input.sample_rate, input.channels)
-            .map_err(|error| format!("无法编码 WAV 音频：{error}"))?;
-        Ok(Some(NativeRecordedAudio {
-            audio_base64: general_purpose::STANDARD.encode(wav),
-            duration_seconds,
-            mime_type: "audio/wav".to_string(),
-        }))
+        self.spawn_device_refresh();
+        result
     }
 
     pub fn cancel(&self) -> Result<(), String> {
-        let mut input = self
-            .input
-            .lock()
-            .map_err(|_| "无法锁定原生录音状态。".to_string())?;
+        let mut input = self.lock_inner()?;
         let Some(input) = input.as_mut() else {
             return Ok(());
         };
@@ -124,7 +142,73 @@ impl NativeAudioRecorder {
             .lock()
             .map_err(|_| "无法清空原生录音采样。".to_string())?
             .clear();
+        pause_stream_quietly(input);
         Ok(())
+    }
+
+    fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, Option<WarmInputStream>>, String> {
+        self.inner
+            .lock()
+            .map_err(|_| "无法锁定原生录音状态。".to_string())
+    }
+
+    /// 录音结束后在后台校验默认输入设备是否变化或流已失效，
+    /// 需要时重建暂停中的流，重建耗时不阻塞任何前台操作。
+    fn spawn_device_refresh(&self) {
+        let inner = Arc::clone(&self.inner);
+        thread::spawn(move || {
+            let host = cpal::default_host();
+            let Some(device) = host.default_input_device() else {
+                return;
+            };
+            let current_name = device.name().unwrap_or_default();
+            let needs_rebuild = match inner.lock() {
+                Ok(guard) => match guard.as_ref() {
+                    Some(input) => {
+                        input.failed.load(Ordering::SeqCst)
+                            || (!current_name.is_empty() && input.device_name != current_name)
+                    }
+                    None => true,
+                },
+                Err(_) => return,
+            };
+            if !needs_rebuild {
+                return;
+            }
+
+            crate::runtime_log::write_line(
+                "[saynow] native audio device changed or failed; rebuilding warm stream",
+            );
+            match create_warm_input_stream() {
+                Ok(stream) => {
+                    if let Ok(mut guard) = inner.lock() {
+                        let recording_now = guard
+                            .as_ref()
+                            .is_some_and(|input| input.recording.load(Ordering::SeqCst));
+                        if !recording_now {
+                            *guard = Some(stream);
+                        }
+                    }
+                }
+                Err(error) => {
+                    crate::runtime_log::write_line(&format!(
+                        "[saynow] native audio warm stream rebuild failed: {error}"
+                    ));
+                }
+            }
+        });
+    }
+}
+
+fn duration_seconds_rounded(started_at: Instant) -> u32 {
+    let millis = started_at.elapsed().as_millis();
+    (((millis + 500) / 1000) as u32).max(1)
+}
+
+fn pause_stream_quietly(input: &WarmInputStream) {
+    if let Err(error) = input.stream.pause() {
+        eprintln!("[saynow] failed to pause native audio stream: {error}");
+        input.failed.store(true, Ordering::SeqCst);
     }
 }
 
@@ -133,6 +217,7 @@ fn create_warm_input_stream() -> Result<WarmInputStream, String> {
     let device = host
         .default_input_device()
         .ok_or_else(|| "未找到可用麦克风输入设备。".to_string())?;
+    let device_name = device.name().unwrap_or_default();
     let supported_config = device
         .default_input_config()
         .map_err(|error| format!("无法读取麦克风默认配置：{error}"))?;
@@ -144,6 +229,7 @@ fn create_warm_input_stream() -> Result<WarmInputStream, String> {
         sample_rate as usize * channels as usize * 10,
     )));
     let recording = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicBool::new(false));
 
     let stream = build_input_stream(
         &device,
@@ -151,15 +237,23 @@ fn create_warm_input_stream() -> Result<WarmInputStream, String> {
         sample_format,
         Arc::clone(&samples),
         Arc::clone(&recording),
+        Arc::clone(&failed),
     )?;
+    // 先 play 完成会话初始化，再立即 pause 让系统认为麦克风空闲；
+    // 之后录音时 play() 仅是 IAudioClient::Start()，毫秒级。
     stream
         .play()
         .map_err(|error| format!("无法启动原生录音流：{error}"))?;
+    stream
+        .pause()
+        .map_err(|error| format!("无法暂停原生录音流：{error}"))?;
 
     Ok(WarmInputStream {
-        _stream: stream,
+        stream,
         samples,
         recording,
+        failed,
+        device_name,
         sample_rate,
         channels,
         started_at: None,
@@ -172,8 +266,15 @@ fn build_input_stream(
     sample_format: SampleFormat,
     samples: Arc<Mutex<Vec<i16>>>,
     recording: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
 ) -> Result<Stream, String> {
-    let err_fn = |error| eprintln!("[saynow] native audio input stream error: {error}");
+    let err_fn = move |error| {
+        eprintln!("[saynow] native audio input stream error: {error}");
+        crate::runtime_log::write_line(&format!(
+            "[saynow] native audio input stream error: {error}"
+        ));
+        failed.store(true, Ordering::SeqCst);
+    };
     match sample_format {
         SampleFormat::I8 => build_stream(device, config, samples, recording, err_fn, convert_i8),
         SampleFormat::I16 => build_stream(device, config, samples, recording, err_fn, convert_i16),
@@ -305,6 +406,16 @@ mod tests {
         assert_eq!(convert_u8(128), 0);
         assert_eq!(convert_u16(32_768), 0);
         assert_eq!(convert_u32(2_147_483_648), 0);
+    }
+
+    #[test]
+    fn rounds_recording_duration_to_nearest_second() {
+        // 无法直接构造 Instant 差值，这里验证毫秒换算逻辑。
+        let round = |millis: u128| (((millis + 500) / 1000) as u32).max(1);
+        assert_eq!(round(400), 1);
+        assert_eq!(round(1400), 1);
+        assert_eq!(round(1600), 2);
+        assert_eq!(round(119_600), 120);
     }
 
     #[test]

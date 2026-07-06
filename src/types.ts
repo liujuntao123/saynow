@@ -4,6 +4,10 @@ export interface UsageStats {
   totalDurationSeconds: number;
   totalRecords: number;
   totalCharacters: number;
+  todayDurationSeconds: number;
+  todayRecords: number;
+  todayCharacters: number;
+  successRatePercent?: number | null;
 }
 
 export interface PlatformStatus {

@@ -5,6 +5,8 @@ import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import UiPanel from '../components/UiPanel.vue';
 import { formatHotkey, isModifierOnlyHotkey } from '../domain/hotkeyRecorder';
+import { testProviderConnection } from '../api/tauri';
+import { useToast } from '../composables/useToast';
 import type { AppConfig, ProviderConfig } from '../types';
 
 const props = defineProps<{
@@ -21,6 +23,7 @@ const emit = defineEmits<{
   hotkeyRecordingChange: [recording: boolean];
 }>();
 
+const toast = useToast();
 const providerForm = reactive<ProviderConfig>({
   id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: true,
 });
@@ -28,16 +31,28 @@ const selectedProviderId = ref<number | null>(null);
 const hotkey = ref('Alt');
 const recordingHotkey = ref(false);
 const pendingModifierOnlyHotkey = ref<string | null>(null);
+const testingConnection = ref(false);
+const connectionResult = ref<{ ok: boolean; message: string } | null>(null);
 let hotkeyCaptureTimer: ReturnType<typeof window.setTimeout> | null = null;
 const HOTKEY_CAPTURE_TIMEOUT_MS = 15_000;
 
+// 模板不再预填 credential-manager 引用（那只是环境变量别名，普通用户不可用），
+// 让用户直接粘贴自己的 API Key。
 const templates = [
-  { id: 'mimo', label: 'MiMo', provider: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5', apiKeyRef: 'credential-manager:mimo' },
-  { id: 'mimo-asr', label: 'MiMo ASR', provider: 'MiMo ASR', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-asr', apiKeyRef: 'credential-manager:mimo' },
-  { id: 'qwen', label: 'Qwen', provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.5-omni-plus', apiKeyRef: 'credential-manager:qwen' },
+  { id: 'mimo', label: 'MiMo', provider: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5' },
+  { id: 'mimo-asr', label: 'MiMo ASR', provider: 'MiMo ASR', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-asr' },
+  { id: 'qwen', label: 'Qwen', provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.5-omni-plus' },
 ];
 
 const activeProvider = computed(() => props.providers.find((provider) => provider.enabled) ?? null);
+const providerFormComplete = computed(() =>
+  Boolean(
+    providerForm.provider.trim() &&
+    providerForm.baseUrl.trim() &&
+    providerForm.model.trim() &&
+    providerForm.apiKeyRef.trim(),
+  ),
+);
 
 watch(() => props.config, (config) => {
   if (!config) return;
@@ -52,18 +67,52 @@ watch(() => props.providers, (providers) => {
   else if (props.config) { Object.assign(providerForm, { id: 0, ...props.config, enabled: true }); selectedProviderId.value = null; }
 }, { immediate: true });
 
-function loadProvider(provider: ProviderConfig) { Object.assign(providerForm, provider); selectedProviderId.value = provider.id; }
-function createProvider() { Object.assign(providerForm, { id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: !props.providers.length }); selectedProviderId.value = null; }
+function loadProvider(provider: ProviderConfig) {
+  Object.assign(providerForm, provider);
+  selectedProviderId.value = provider.id;
+  connectionResult.value = null;
+}
+function createProvider() {
+  Object.assign(providerForm, { id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: !props.providers.length });
+  selectedProviderId.value = null;
+  connectionResult.value = null;
+}
 function applyTemplate(templateId: string) {
   const template = templates.find((item) => item.id === templateId);
   if (!template) return;
-  Object.assign(providerForm, { provider: template.provider, baseUrl: template.baseUrl, model: template.model, apiKeyRef: template.apiKeyRef });
+  Object.assign(providerForm, { provider: template.provider, baseUrl: template.baseUrl, model: template.model });
+  connectionResult.value = null;
 }
 function isTemplateApplied(template: (typeof templates)[number]) { return providerForm.provider === template.provider && providerForm.model === template.model; }
 function saveProvider() {
   const provider = { ...providerForm, provider: providerForm.provider.trim(), baseUrl: providerForm.baseUrl.trim(), model: providerForm.model.trim(), apiKeyRef: providerForm.apiKeyRef.trim(), enabled: providerForm.enabled || !props.providers.length };
-  if (!provider.provider || !provider.baseUrl || !provider.model || !provider.apiKeyRef) return;
+  if (!provider.provider || !provider.baseUrl || !provider.model || !provider.apiKeyRef) {
+    toast.error('请填写完整的供应商、模型、URL 和 API Key。');
+    return;
+  }
   emit('saveProvider', provider);
+}
+async function testConnection() {
+  if (!providerFormComplete.value) {
+    toast.error('请先填写完整的供应商、模型、URL 和 API Key。');
+    return;
+  }
+  testingConnection.value = true;
+  connectionResult.value = null;
+  try {
+    const message = await testProviderConnection({
+      ...providerForm,
+      provider: providerForm.provider.trim(),
+      baseUrl: providerForm.baseUrl.trim(),
+      model: providerForm.model.trim(),
+      apiKeyRef: providerForm.apiKeyRef.trim(),
+    });
+    connectionResult.value = { ok: true, message };
+  } catch (error) {
+    connectionResult.value = { ok: false, message: typeof error === 'string' ? error : String(error) };
+  } finally {
+    testingConnection.value = false;
+  }
 }
 function saveHotkey() {
   const provider = activeProvider.value;
@@ -208,24 +257,41 @@ onBeforeUnmount(() => {
                 URL <input v-model="providerForm.baseUrl" placeholder="https://api..." />
               </label>
               <label class="field-span-2">
-                API Key <input v-model="providerForm.apiKeyRef" type="password" placeholder="填写您的 Key" />
+                API Key <input v-model="providerForm.apiKeyRef" type="password" placeholder="粘贴您的 API Key" />
               </label>
             </div>
 
+            <p
+              v-if="connectionResult"
+              class="connection-result"
+              :class="connectionResult.ok ? 'ok' : 'failed'"
+            >
+              <AppIcon :name="connectionResult.ok ? 'check' : 'alert-circle'" />
+              <span>{{ connectionResult.message }}</span>
+            </p>
+
             <div class="provider-form-actions">
               <div class="item-actions">
-                <button class="primary-button compact-action-button icon-only-button" type="submit" :disabled="saving" aria-label="保存" title="保存">
-                  <AppIcon :name="saving ? 'activity' : 'save'" />
+                <button
+                  class="secondary-button compact-action-button"
+                  type="button"
+                  :disabled="saving || testingConnection || !providerFormComplete"
+                  @click="testConnection"
+                >
+                  <AppIcon name="activity" /> {{ testingConnection ? '测试中…' : '测试连接' }}
+                </button>
+                <button class="primary-button compact-action-button" type="submit" :disabled="saving">
+                  <AppIcon name="save" /> 保存
                 </button>
                 <button
-                  class="secondary-button compact-action-button icon-only-button"
-                  type="button" :disabled="saving || !providerForm.id || providerForm.enabled" @click="emit('selectProvider', providerForm.id)" title="启用此配置"
+                  class="secondary-button compact-action-button"
+                  type="button" :disabled="saving || !providerForm.id || providerForm.enabled" @click="emit('selectProvider', providerForm.id)"
                 >
-                  <AppIcon name="check" />
+                  <AppIcon name="check" /> 启用
                 </button>
                 <button
                   class="danger-button compact-action-button icon-only-button"
-                  type="button" :disabled="saving || !providerForm.id" @click="emit('deleteProvider', providerForm.id)" title="删除"
+                  type="button" :disabled="saving || !providerForm.id" @click="emit('deleteProvider', providerForm.id)" title="删除" aria-label="删除"
                 >
                   <AppIcon name="trash" />
                 </button>
@@ -239,12 +305,13 @@ onBeforeUnmount(() => {
         <UiPanel title="全局唤醒快捷键" icon="keyboard" class="hotkey-panel custom-glass-panel">
           <div class="hotkey-recorder" :class="{ recording: recordingHotkey }" tabindex="0" @keydown="recordHotkey">
             <div class="recorder-halo"></div>
-            <span>{{ recordingHotkey ? '请按下按键...' : hotkey || '未设置' }}</span>
+            <span>{{ recordingHotkey ? (pendingModifierOnlyHotkey ? `${pendingModifierOnlyHotkey}（松开确认）` : '请按下按键...') : hotkey || '未设置（热键已禁用）' }}</span>
+            <small v-if="recordingHotkey" class="hotkey-hint">按组合键设置；单独修饰键需按下后松开确认；Esc 取消</small>
             <div class="hotkey-actions">
-              <button class="secondary-button icon-only-button" type="button" @click="startHotkeyCapture"><AppIcon name="keyboard" /></button>
-              <button class="ghost-button icon-only-button" type="button" @click="hotkey = ''"><AppIcon name="trash" /></button>
-              <button v-if="recordingHotkey" class="ghost-button icon-only-button" type="button" @click="stopHotkeyCapture"><AppIcon name="x" /></button>
-              <button class="primary-button icon-only-button" type="button" :disabled="saving" @click="saveHotkey"><AppIcon name="save" /></button>
+              <button class="secondary-button icon-only-button" type="button" title="录制快捷键" aria-label="录制快捷键" @click="startHotkeyCapture"><AppIcon name="keyboard" /></button>
+              <button class="ghost-button icon-only-button" type="button" title="清空（禁用热键）" aria-label="清空快捷键" @click="hotkey = ''"><AppIcon name="trash" /></button>
+              <button v-if="recordingHotkey" class="ghost-button icon-only-button" type="button" title="取消录制" aria-label="取消录制" @click="stopHotkeyCapture"><AppIcon name="x" /></button>
+              <button class="primary-button icon-only-button" type="button" :disabled="saving" title="保存快捷键" aria-label="保存快捷键" @click="saveHotkey"><AppIcon name="save" /></button>
             </div>
           </div>
         </UiPanel>
@@ -316,8 +383,18 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 /* 表单布局 */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: auto; padding: 0; }
 .field-span-2 { grid-column: 1 / -1; }
+.connection-result {
+  display: inline-flex; align-items: flex-start; gap: 8px; margin: 14px 0 0;
+  padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.connection-result .app-icon { flex: 0 0 auto; width: 15px; height: 15px; margin-top: 2px; }
+.connection-result.ok { background: #e6f3e9; color: #247348; }
+.connection-result.failed { background: #f8e6e4; color: #c84d4d; }
 .provider-form-actions { margin-top: 24px; padding-top: 20px; border-top: 1px solid rgba(0,0,0,0.04); display: flex; justify-content: flex-end; align-items: center; }
 .item-actions { display: flex; gap: 12px; }
+.compact-action-button { gap: 6px; }
+.compact-action-button .app-icon { width: 15px; height: 15px; }
 
 /* 快捷键艺术录制区 */
 .config-side-stack { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; }
@@ -331,7 +408,8 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .recorder-halo { position: absolute; top: 50%; left: 50%; width: 110px; height: 110px; background: #0f8f83; filter: blur(42px); opacity: 0; transform: translate(-50%, -50%); transition: opacity 0.5s; pointer-events: none; }
 .hotkey-recorder.recording { box-shadow: inset 0 0 0 2px #0f8f83; }
 .hotkey-recorder.recording .recorder-halo { opacity: 0.15; animation: pulseHalo 2s infinite; }
-.hotkey-recorder span { position: relative; z-index: 1; font-size: 22px; font-weight: 700; color: #1d1d1f; letter-spacing: 0; }
+.hotkey-recorder span { position: relative; z-index: 1; font-size: 20px; font-weight: 700; color: #1d1d1f; letter-spacing: 0; text-align: center; padding: 0 12px; }
+.hotkey-hint { position: relative; z-index: 1; margin: -10px 12px 0; color: #8a9793; font-size: 11px; line-height: 1.5; text-align: center; }
 .hotkey-actions { position: relative; z-index: 1; display: flex; gap: 8px; }
 .hotkey-actions .icon-only-button { width: 34px; height: 34px; }
 @keyframes pulseHalo { 0% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.2); } 100% { transform: translate(-50%, -50%) scale(1); } }

@@ -33,6 +33,7 @@ pub fn run() {
                 ));
             }
             app.manage(recorder);
+            app.manage(commands::LastRecognitionAudio::default());
 
             create_recorder_window(app)?;
 

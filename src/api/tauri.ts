@@ -42,12 +42,28 @@ export async function deleteProviderConfig(id: number): Promise<ProviderConfig[]
   return invoke('delete_provider_config', { id });
 }
 
+export async function testProviderConnection(provider: ProviderConfig): Promise<string> {
+  return invoke('test_provider_connection', { provider });
+}
+
 export async function listRecords(): Promise<RecognitionRecord[]> {
   return invoke('list_records');
 }
 
+export async function deleteRecord(id: number): Promise<RecognitionRecord[]> {
+  return invoke('delete_record', { id });
+}
+
+export async function clearRecords(): Promise<RecognitionRecord[]> {
+  return invoke('clear_records');
+}
+
 export async function listCorrectionRecords(): Promise<CorrectionRecord[]> {
   return invoke('list_correction_records');
+}
+
+export async function clearCorrectionRecords(): Promise<CorrectionRecord[]> {
+  return invoke('clear_correction_records');
 }
 
 export async function saveCorrection(input: SaveCorrectionInput): Promise<CorrectionRecord> {
@@ -58,8 +74,16 @@ export async function listLearningRules(): Promise<LearningRule[]> {
   return invoke('list_learning_rules');
 }
 
-export async function refreshLearningRules(): Promise<LearningRule[]> {
-  return invoke('refresh_learning_rules');
+export async function updateLearningRuleStatus(id: number, status: string): Promise<LearningRule[]> {
+  return invoke('update_learning_rule_status', { id, status });
+}
+
+export async function deleteLearningRule(id: number): Promise<LearningRule[]> {
+  return invoke('delete_learning_rule', { id });
+}
+
+export async function clearLearningRules(): Promise<LearningRule[]> {
+  return invoke('clear_learning_rules');
 }
 
 export async function runLearningEngine(force: boolean): Promise<LearningRule[]> {
@@ -70,12 +94,12 @@ export async function listVocabulary(): Promise<VocabularyItem[]> {
   return invoke('list_vocabulary');
 }
 
-export async function addVocabulary(item: VocabularyItem): Promise<VocabularyItem[]> {
-  return invoke('add_vocabulary', { item });
-}
-
 export async function addVocabularyTerms(terms: string[]): Promise<VocabularyItem[]> {
   return invoke('add_vocabulary_terms', { terms });
+}
+
+export async function updateVocabulary(item: VocabularyItem): Promise<VocabularyItem[]> {
+  return invoke('update_vocabulary', { item });
 }
 
 export async function deleteVocabulary(id: number): Promise<VocabularyItem[]> {
@@ -120,6 +144,10 @@ export async function recognizeAudio(input: RecordedAudio): Promise<RecognitionR
   return invoke('recognize_audio', { input });
 }
 
+export async function retryLastRecognition(): Promise<RecognitionRecord> {
+  return invoke('retry_last_recognition');
+}
+
 export async function startNativeRecording(): Promise<void> {
   return invoke('start_native_recording');
 }
@@ -158,10 +186,6 @@ export async function setHotkeyMonitor(parts: string[] | null): Promise<void> {
 
 export async function rememberInputTarget(): Promise<void> {
   return invoke('remember_input_target');
-}
-
-export async function restoreInputTarget(): Promise<void> {
-  return invoke('restore_input_target');
 }
 
 export async function undoLastInjectedText(): Promise<void> {

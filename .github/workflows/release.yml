@@ -47,13 +47,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "saynow v0.1.37"
+          releaseName: "saynow ${{ github.ref_name }}"
           releaseBody: |
             Windows 安装包见本 Release 附件。
 
             ## Change Log
 
-            - 修复高 DPI 缩放下录音 overlay 窗口高度偏小，导致下半截被裁切的问题。
+            - 麦克风空闲即释放：录音流常驻但空闲时暂停（系统不再显示"正在使用麦克风"），录音启动仍为毫秒级，无 4-5 秒冷启动。
+            - 识别/学习请求加入超时与共享连接池，失败可在浮窗一键重试。
+            - 新增供应商"测试连接"、识别记录搜索/复制/删除、学习规则停用/固定/删除、词库别名编辑与去重。
+            - 全局操作反馈（toast）与危险操作确认；纠错浮窗停留延长且悬停不关闭；录音浮条显示计时。
+            - 首页新增今日用量与识别成功率。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

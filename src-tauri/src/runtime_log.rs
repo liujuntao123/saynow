@@ -9,6 +9,9 @@ use std::{
 use chrono::Utc;
 
 const LOG_FILE_NAME: &str = "saynow-runtime.log";
+const LOG_BACKUP_FILE_NAME: &str = "saynow-runtime.log.1";
+/// 单个日志文件上限；超过后轮转为 .1 备份，最多保留一份备份。
+const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 static LOG_SENDER: OnceLock<Result<mpsc::Sender<String>, String>> = OnceLock::new();
 
 pub fn write_line(message: &str) {
@@ -26,7 +29,22 @@ pub fn log_path_string() -> Result<String, String> {
     log_path().map(|path| path.display().to_string())
 }
 
+fn rotate_if_needed(path: &PathBuf) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    if metadata.len() < LOG_ROTATE_BYTES {
+        return;
+    }
+    let backup = path.with_file_name(LOG_BACKUP_FILE_NAME);
+    let _ = std::fs::remove_file(&backup);
+    if let Err(error) = std::fs::rename(path, &backup) {
+        eprintln!("[saynow] failed to rotate runtime log: {error}");
+    }
+}
+
 fn append_line(path: PathBuf, message: &str) -> Result<(), String> {
+    rotate_if_needed(&path);
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)

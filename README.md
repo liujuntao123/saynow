@@ -57,3 +57,7 @@ npm run tauri dev -- --features desktop
 - `docs/design/technical-design.md`
 - `docs/self-learning-engine.md`
 - `docs/development.md`
+
+-----
+友情链接
+学AI，上L站：https://linux.do

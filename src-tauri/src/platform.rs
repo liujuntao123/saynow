@@ -162,7 +162,7 @@ mod platform_impl {
     const HOTKEY_MONITOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
     const HOTKEY_HOOK_REFRESH_INTERVAL: Duration = Duration::from_secs(900);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
-    const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(60);
+    const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(200);
     const CLIPBOARD_OPEN_RETRIES: usize = 8;
     const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(20);
     const INPUT_TARGET_SETTLE_DELAY: Duration = Duration::from_millis(80);
@@ -752,7 +752,7 @@ mod platform_impl {
         let Some(started_at) = context.state.candidate_started_at() else {
             return;
         };
-        if started_at.elapsed() < HOTKEY_HOLD_DELAY {
+        if !hotkey_hold_confirmed(started_at, Instant::now()) {
             return;
         }
         if !tracked_hotkey_is_down(context) {
@@ -763,6 +763,10 @@ mod platform_impl {
         context.state = HotkeyState::Recording;
         context.release_miss_count = 0;
         context.pending_events.push(PendingHotkeyEvent::Pressed);
+    }
+
+    fn hotkey_hold_confirmed(started_at: Instant, now: Instant) -> bool {
+        now.saturating_duration_since(started_at) >= HOTKEY_HOLD_DELAY
     }
 
     fn check_hotkey_health() {
@@ -1430,6 +1434,24 @@ mod platform_impl {
             let up = handle_hotkey_key_released(&mut context, alt());
             assert!(up.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
+        }
+
+        #[test]
+        fn hotkey_hold_requires_full_confirmation_delay() {
+            let started_at = Instant::now();
+
+            assert!(!hotkey_hold_confirmed(
+                started_at,
+                started_at + Duration::from_millis(60)
+            ));
+            assert!(!hotkey_hold_confirmed(
+                started_at,
+                started_at + Duration::from_millis(199)
+            ));
+            assert!(hotkey_hold_confirmed(
+                started_at,
+                started_at + Duration::from_millis(200)
+            ));
         }
 
         #[test]

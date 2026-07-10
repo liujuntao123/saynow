@@ -53,7 +53,7 @@ jobs:
 
             ## Change Log
 
-            - 恢复全局快捷键 200ms 长按确认：短按不启动录音，持续按住才进入录音状态。
+            - 将全局快捷键长按确认调整为 300ms：短按不启动录音，持续按住才进入录音状态。
             - 新增长按阈值边界测试，防止快捷键再次退化为按下即录音。
           generateReleaseNotes: false
           releaseDraft: false

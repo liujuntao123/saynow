@@ -15,7 +15,7 @@
 - 专属词库：维护术语、缩写、项目名、人名和固定表达，让模型优先识别你常用的词。
 - 风格提示词：用自然语言定义输出风格，让同一段语音适配聊天、会议纪要、工单描述或技术记录。
 - 自学习引擎：整理明确纠错和成功识别历史，把高频表达、数字格式、技术字段沉淀为个性化规则。
-- 模型配置：内置 MiMo-v2.5、MiMo ASR 和 Qwen3.5-Omni 模板，也支持自定义 OpenAI-compatible Base URL、模型和 API Key。
+- 模型配置：内置 MiMo-v2.5、MiMo ASR、Qwen3.5-Omni 与豆包流式 ASR（WebSocket）模板；也支持自定义 OpenAI-compatible Base URL、模型和 API Key。
 - 历史与统计：查看最近识别记录、使用次数和输入效率数据。
 
 ## 开发
@@ -47,7 +47,12 @@ npm run tauri dev -- --features desktop
 
 前端使用 Vue 3、TypeScript 和 Vite；桌面端基于 Tauri 2；本地能力和数据逻辑主要由 Rust 实现。
 
-后端负责本地命令、SQLite 持久化、模型 Provider 调用、Windows 文本写入，以及个性化上下文构建。SQLite 保存供应商配置、快捷键配置、识别记录、纠错记录、词库、风格提示词、学习引擎配置和学习规则。模型调用以 OpenAI-compatible Chat Completions 为基础，供应商差异主要在 `src-tauri/src/provider.rs` 中适配。
+后端负责本地命令、SQLite 持久化、模型 Provider 调用、Windows 文本写入，以及个性化上下文构建。SQLite 保存供应商配置、快捷键配置、识别记录、纠错记录、词库、风格提示词、学习引擎配置和学习规则。
+
+识别供应商支持两类：
+
+- **OpenAI-compatible**（MiMo / Qwen 等）：Chat Completions + SSE，适配逻辑在 `src-tauri/src/provider.rs`。
+- **豆包流式 ASR**：录完后将音频重采样为 16k mono PCM，经 WebSocket 二进制协议分包识别，实现在 `src-tauri/src/asr/doubao/`。配置页可选旧控制台（App Key + Access Key）或新控制台（仅 API Key）；Resource Id 默认 `volc.seedasr.sauc.duration`。排查问题时可关注运行日志中的 `X-Tt-Logid`。
 
 自学习相关逻辑集中在 Rust 后端的数据命令和学习模块中。当前学习闭环包括：保存 `rawText -> correctedText` 纠错对、记录成功识别历史、按空闲时间或手动触发整理、请求配置的学习模型、解析 JSON 学习规则、写入本地规则表，并在后续识别时把可用规则拼入个性化提示上下文。
 

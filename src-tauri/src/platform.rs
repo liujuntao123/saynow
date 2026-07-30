@@ -147,9 +147,9 @@ mod platform_impl {
             GetGUIThreadInfo, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow, PeekMessageW,
             SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, ShowWindow,
             TranslateMessage, UnhookWindowsHookEx, GUITHREADINFO, GWL_EXSTYLE, HHOOK, HWND_TOPMOST,
-            KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
-            WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, MSG, PM_REMOVE, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WM_KEYDOWN,
+            WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
         },
     };
 
@@ -232,10 +232,20 @@ mod platform_impl {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     enum ModifierKey {
+        /// Either left or right Control (legacy generic Ctrl).
         Ctrl,
-        Alt,
+        /// Left Control only.
+        LCtrl,
+        LAlt,
+        RAlt,
         Shift,
         Meta,
+    }
+
+    impl ModifierKey {
+        fn is_alt(self) -> bool {
+            matches!(self, Self::LAlt | Self::RAlt)
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -419,13 +429,22 @@ mod platform_impl {
                 "Ctrl" => {
                     modifiers.insert(ModifierKey::Ctrl);
                 }
+                "LCtrl" | "ControlLeft" => {
+                    modifiers.insert(ModifierKey::LCtrl);
+                }
+                "LAlt" | "AltLeft" => {
+                    modifiers.insert(ModifierKey::LAlt);
+                }
+                "RAlt" | "AltRight" => {
+                    modifiers.insert(ModifierKey::RAlt);
+                }
                 "Alt" => {
-                    modifiers.insert(ModifierKey::Alt);
+                    return Err("请使用 LAlt 或 RAlt 区分左右 Alt 键。".to_string());
                 }
                 "Shift" => {
                     modifiers.insert(ModifierKey::Shift);
                 }
-                "Meta" => {
+                "Meta" | "Win" | "Cmd" => {
                     modifiers.insert(ModifierKey::Meta);
                 }
                 other => {
@@ -444,7 +463,7 @@ mod platform_impl {
             .map(HotkeyKey::Modifier)
             .chain(trigger.map(HotkeyKey::Virtual))
             .collect();
-        let capture_events = modifiers.contains(&ModifierKey::Alt);
+        let capture_events = modifiers.iter().any(|key| key.is_alt());
         Ok(HotkeySpec {
             modifiers,
             required_keys,
@@ -612,7 +631,7 @@ mod platform_impl {
                 if data.flags.contains(LLKHF_INJECTED) && data.dwExtraInfo == SAYNOW_INPUT_MARKER {
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
-                let modifier = modifier_from_vk(data.vkCode);
+                let modifier = modifier_from_vk(data.vkCode, data.flags);
                 if handle_key_event(data.vkCode, modifier, pressed) {
                     return LRESULT(1);
                 }
@@ -633,7 +652,7 @@ mod platform_impl {
             return false;
         }
 
-        let key = event_key(vk_code, modifier);
+        let key = normalize_event_key_for_hotkey(event_key(vk_code, modifier), &context.hotkey);
         let should_replay_capture = should_replay_captured_prefix(context, key, pressed);
         let should_capture = should_capture_event(context, key, pressed);
         let release_reason = if pressed {
@@ -716,6 +735,20 @@ mod platform_impl {
             HotkeyKey::Modifier(key)
         } else {
             HotkeyKey::Virtual(vk_code)
+        }
+    }
+
+    /// Map physical left-control events onto generic Ctrl when the hotkey asks for Ctrl.
+    /// LCtrl-only hotkeys keep the sided key so right Control does not match.
+    fn normalize_event_key_for_hotkey(key: HotkeyKey, hotkey: &HotkeySpec) -> HotkeyKey {
+        match key {
+            HotkeyKey::Modifier(ModifierKey::LCtrl)
+                if hotkey.modifiers.contains(&ModifierKey::Ctrl)
+                    && !hotkey.modifiers.contains(&ModifierKey::LCtrl) =>
+            {
+                HotkeyKey::Modifier(ModifierKey::Ctrl)
+            }
+            other => other,
         }
     }
 
@@ -817,12 +850,23 @@ mod platform_impl {
     fn all_unconfigured_modifiers_are_up(hotkey: &HotkeySpec) -> bool {
         [
             ModifierKey::Ctrl,
-            ModifierKey::Alt,
+            ModifierKey::LCtrl,
+            ModifierKey::LAlt,
+            ModifierKey::RAlt,
             ModifierKey::Shift,
             ModifierKey::Meta,
         ]
         .into_iter()
-        .all(|key| hotkey.modifiers.contains(&key) || !modifier_is_down(key))
+        .all(|key| {
+            // LCtrl is a stricter form of Ctrl — if either is configured, treat the family as configured.
+            if matches!(key, ModifierKey::Ctrl | ModifierKey::LCtrl)
+                && (hotkey.modifiers.contains(&ModifierKey::Ctrl)
+                    || hotkey.modifiers.contains(&ModifierKey::LCtrl))
+            {
+                return true;
+            }
+            hotkey.modifiers.contains(&key) || !modifier_is_down(key)
+        })
     }
 
     fn modifier_is_down(key: ModifierKey) -> bool {
@@ -832,11 +876,9 @@ mod platform_impl {
                     || virtual_key_is_down(VK_LCONTROL.0 as u32)
                     || virtual_key_is_down(VK_RCONTROL.0 as u32)
             }
-            ModifierKey::Alt => {
-                virtual_key_is_down(VK_MENU.0 as u32)
-                    || virtual_key_is_down(VK_LMENU.0 as u32)
-                    || virtual_key_is_down(VK_RMENU.0 as u32)
-            }
+            ModifierKey::LCtrl => virtual_key_is_down(VK_LCONTROL.0 as u32),
+            ModifierKey::LAlt => virtual_key_is_down(VK_LMENU.0 as u32),
+            ModifierKey::RAlt => virtual_key_is_down(VK_RMENU.0 as u32),
             ModifierKey::Shift => {
                 virtual_key_is_down(VK_SHIFT.0 as u32)
                     || virtual_key_is_down(VK_LSHIFT.0 as u32)
@@ -933,18 +975,44 @@ mod platform_impl {
             return context.captured_keys.contains(&key);
         }
 
-        key == HotkeyKey::Modifier(ModifierKey::Alt)
+        is_alt_hotkey_key(key)
             || context
                 .pressed
-                .contains(&HotkeyKey::Modifier(ModifierKey::Alt))
+                .iter()
+                .any(|pressed| is_alt_hotkey_key(*pressed))
     }
 
-    fn modifier_from_vk(vk_code: u32) -> Option<ModifierKey> {
+    fn is_alt_hotkey_key(key: HotkeyKey) -> bool {
+        matches!(
+            key,
+            HotkeyKey::Modifier(ModifierKey::LAlt) | HotkeyKey::Modifier(ModifierKey::RAlt)
+        )
+    }
+
+    fn modifier_from_vk(
+        vk_code: u32,
+        flags: windows::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT_FLAGS,
+    ) -> Option<ModifierKey> {
         let key = VIRTUAL_KEY(vk_code as u16);
-        if key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL {
+        if key == VK_LCONTROL {
+            Some(ModifierKey::LCtrl)
+        } else if key == VK_RCONTROL {
+            // Right Control is only matched by generic Ctrl hotkeys.
             Some(ModifierKey::Ctrl)
-        } else if key == VK_MENU || key == VK_LMENU || key == VK_RMENU {
-            Some(ModifierKey::Alt)
+        } else if key == VK_CONTROL {
+            // Generic CONTROL without side: treat as left for preset LCtrl+Meta.
+            Some(ModifierKey::LCtrl)
+        } else if key == VK_LMENU {
+            Some(ModifierKey::LAlt)
+        } else if key == VK_RMENU {
+            Some(ModifierKey::RAlt)
+        } else if key == VK_MENU {
+            // Generic VK_MENU: extended bit distinguishes right Alt.
+            if flags.contains(LLKHF_EXTENDED) {
+                Some(ModifierKey::RAlt)
+            } else {
+                Some(ModifierKey::LAlt)
+            }
         } else if key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT {
             Some(ModifierKey::Shift)
         } else if key == VK_LWIN || key == VK_RWIN {
@@ -1322,7 +1390,9 @@ mod platform_impl {
     fn send_hotkey_key_down(key: HotkeyKey) -> Result<(), String> {
         let virtual_key = match key {
             HotkeyKey::Modifier(ModifierKey::Ctrl) => VK_CONTROL,
-            HotkeyKey::Modifier(ModifierKey::Alt) => VK_MENU,
+            HotkeyKey::Modifier(ModifierKey::LCtrl) => VK_LCONTROL,
+            HotkeyKey::Modifier(ModifierKey::LAlt) => VK_LMENU,
+            HotkeyKey::Modifier(ModifierKey::RAlt) => VK_RMENU,
             HotkeyKey::Modifier(ModifierKey::Shift) => VK_SHIFT,
             HotkeyKey::Modifier(ModifierKey::Meta) => VK_LWIN,
             HotkeyKey::Virtual(vk_code) => VIRTUAL_KEY(vk_code as u16),
@@ -1407,8 +1477,20 @@ mod platform_impl {
             HotkeyKey::Modifier(ModifierKey::Ctrl)
         }
 
-        fn alt() -> HotkeyKey {
-            HotkeyKey::Modifier(ModifierKey::Alt)
+        fn lctrl() -> HotkeyKey {
+            HotkeyKey::Modifier(ModifierKey::LCtrl)
+        }
+
+        fn meta() -> HotkeyKey {
+            HotkeyKey::Modifier(ModifierKey::Meta)
+        }
+
+        fn lalt() -> HotkeyKey {
+            HotkeyKey::Modifier(ModifierKey::LAlt)
+        }
+
+        fn ralt() -> HotkeyKey {
+            HotkeyKey::Modifier(ModifierKey::RAlt)
         }
 
         fn space() -> HotkeyKey {
@@ -1425,15 +1507,70 @@ mod platform_impl {
 
         #[test]
         fn standalone_modifier_enters_candidate_and_short_release_cancels() {
-            let mut context = context(hotkey(&["Alt"]));
+            let mut context = context(hotkey(&["LAlt"]));
 
-            let down = handle_hotkey_key_pressed(&mut context, alt());
+            let down = handle_hotkey_key_pressed(&mut context, lalt());
             assert!(down.is_none());
             assert!(matches!(context.state, HotkeyState::Candidate { .. }));
 
-            let up = handle_hotkey_key_released(&mut context, alt());
+            let up = handle_hotkey_key_released(&mut context, lalt());
             assert!(up.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
+        }
+
+        #[test]
+        fn left_and_right_alt_are_distinct_hotkeys() {
+            let mut left_context = context(hotkey(&["LAlt"]));
+            let right_on_left = handle_hotkey_key_pressed(&mut left_context, ralt());
+            assert!(right_on_left.is_none());
+            assert_eq!(left_context.state, HotkeyState::Idle);
+            let _ = handle_hotkey_key_released(&mut left_context, ralt());
+
+            let left_down = handle_hotkey_key_pressed(&mut left_context, lalt());
+            assert!(left_down.is_none());
+            assert!(matches!(left_context.state, HotkeyState::Candidate { .. }));
+
+            let mut right_context = context(hotkey(&["RAlt"]));
+            let left_on_right = handle_hotkey_key_pressed(&mut right_context, lalt());
+            assert!(left_on_right.is_none());
+            assert_eq!(right_context.state, HotkeyState::Idle);
+            let _ = handle_hotkey_key_released(&mut right_context, lalt());
+
+            let right_on_right = handle_hotkey_key_pressed(&mut right_context, ralt());
+            assert!(right_on_right.is_none());
+            assert!(matches!(right_context.state, HotkeyState::Candidate { .. }));
+        }
+
+        #[test]
+        fn lctrl_meta_requires_both_keys() {
+            let mut context = context(hotkey(&["LCtrl", "Meta"]));
+
+            let ctrl_down = handle_hotkey_key_pressed(&mut context, lctrl());
+            assert!(ctrl_down.is_none());
+            assert_eq!(context.state, HotkeyState::Idle);
+
+            let meta_down = handle_hotkey_key_pressed(&mut context, meta());
+            assert!(meta_down.is_none());
+            assert!(matches!(context.state, HotkeyState::Candidate { .. }));
+        }
+
+        #[test]
+        fn right_ctrl_does_not_satisfy_lctrl_meta() {
+            let mut context = context(hotkey(&["LCtrl", "Meta"]));
+            let right_ctrl = handle_hotkey_key_pressed(
+                &mut context,
+                HotkeyKey::Modifier(ModifierKey::Ctrl),
+            );
+            let _ = handle_hotkey_key_pressed(&mut context, meta());
+
+            assert!(right_ctrl.is_none());
+            assert_eq!(context.state, HotkeyState::Idle);
+        }
+
+        #[test]
+        fn rejects_generic_alt_hotkey_parts() {
+            let error = parse_hotkey_parts(&["Alt".to_string()]).unwrap_err();
+            assert!(error.contains("LAlt") || error.contains("RAlt"));
         }
 
         #[test]
@@ -1456,11 +1593,11 @@ mod platform_impl {
 
         #[test]
         fn interrupted_standalone_candidate_passes_through_and_cancels() {
-            let mut context = context(hotkey(&["Alt"]));
-            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            let mut context = context(hotkey(&["LAlt"]));
+            let _ = handle_hotkey_key_pressed(&mut context, lalt());
 
             let extra_down = handle_hotkey_key_pressed(&mut context, key_a());
-            let alt_up = handle_hotkey_key_released(&mut context, alt());
+            let alt_up = handle_hotkey_key_released(&mut context, lalt());
 
             assert!(extra_down.is_none());
             assert_eq!(context.state, HotkeyState::Idle);
@@ -1508,16 +1645,16 @@ mod platform_impl {
 
         #[test]
         fn candidate_keeps_exact_pressed_hotkey_state() {
-            let mut context = context(hotkey(&["Alt"]));
-            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            let mut context = context(hotkey(&["LAlt"]));
+            let _ = handle_hotkey_key_pressed(&mut context, lalt());
 
             assert!(hotkey_exactly_pressed(&context.hotkey, &context.pressed));
         }
 
         #[test]
         fn alt_hotkeys_use_captured_software_state_for_candidate_confirmation() {
-            let mut context = context(hotkey(&["Alt"]));
-            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            let mut context = context(hotkey(&["LAlt"]));
+            let _ = handle_hotkey_key_pressed(&mut context, lalt());
 
             assert!(context.hotkey.capture_events);
             assert!(tracked_hotkey_is_down(&context));
@@ -1532,36 +1669,36 @@ mod platform_impl {
 
         #[test]
         fn alt_capture_starts_with_alt_not_other_modifiers() {
-            let mut context = context(hotkey(&["Ctrl", "Alt"]));
+            let mut context = context(hotkey(&["Ctrl", "LAlt"]));
 
             assert!(!should_capture_event(&context, ctrl(), true));
 
             let _ = handle_hotkey_key_pressed(&mut context, ctrl());
             assert!(!should_capture_event(&context, ctrl(), true));
-            assert!(should_capture_event(&context, alt(), true));
+            assert!(should_capture_event(&context, lalt(), true));
 
-            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            let _ = handle_hotkey_key_pressed(&mut context, lalt());
             assert!(should_capture_event(&context, ctrl(), true));
         }
 
         #[test]
         fn alt_only_hotkey_replays_tentative_alt_when_combo_key_follows() {
-            let mut context = context(hotkey(&["Alt"]));
+            let mut context = context(hotkey(&["RAlt"]));
 
-            assert!(should_capture_event(&context, alt(), true));
-            track_captured_event(&mut context, alt(), true);
-            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            assert!(should_capture_event(&context, ralt(), true));
+            track_captured_event(&mut context, ralt(), true);
+            let _ = handle_hotkey_key_pressed(&mut context, ralt());
 
             assert!(should_replay_captured_prefix(&context, key_a(), true));
         }
 
         #[test]
         fn alt_combo_hotkey_captures_only_configured_combo_keys() {
-            let mut context = context(hotkey(&["Alt", "Space"]));
+            let mut context = context(hotkey(&["LAlt", "Space"]));
 
-            assert!(should_capture_event(&context, alt(), true));
-            track_captured_event(&mut context, alt(), true);
-            let _ = handle_hotkey_key_pressed(&mut context, alt());
+            assert!(should_capture_event(&context, lalt(), true));
+            track_captured_event(&mut context, lalt(), true);
+            let _ = handle_hotkey_key_pressed(&mut context, lalt());
 
             assert!(!should_replay_captured_prefix(&context, space(), true));
             assert!(should_capture_event(&context, space(), true));

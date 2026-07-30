@@ -1,3 +1,4 @@
+pub mod asr;
 pub mod audio;
 pub mod commands;
 pub mod db;
@@ -162,7 +163,8 @@ mod tests {
                 base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
                 model: "qwen-custom".to_string(),
                 api_key_ref: "literal:test-key".to_string(),
-                hotkey: "Alt+Space".to_string(),
+                hotkey: "LCtrl+Meta".to_string(),
+                ..Default::default()
             })
             .unwrap();
         drop(legacy_db);
@@ -174,7 +176,7 @@ mod tests {
         assert_eq!(config.provider, "Qwen");
         assert_eq!(config.model, "qwen-custom");
         assert_eq!(config.api_key_ref, "literal:test-key");
-        assert_eq!(config.hotkey, "Alt+Space");
+        assert_eq!(config.hotkey, "LCtrl+Meta");
 
         let _ = std::fs::remove_dir_all(test_dir);
     }

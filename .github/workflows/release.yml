@@ -53,8 +53,9 @@ jobs:
 
             ## Change Log
 
-            - 将全局快捷键长按确认调整为 300ms：短按不启动录音，持续按住才进入录音状态。
-            - 新增长按阈值边界测试，防止快捷键再次退化为按下即录音。
+            - 新增豆包流式 ASR（WebSocket）供应商：录完后按 16k mono PCM 分包识别，支持新旧控制台鉴权。
+            - 配置页增加豆包 ASR 模板、Resource Id 与凭证字段；词库启用词映射为热词。
+            - 快捷键改为预设选择（LCtrl+Meta / RAlt），并保留热键相关交互修复。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

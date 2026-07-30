@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    asr::{is_doubao_provider, recognize_doubao_with_transcript, test_doubao_connection},
     audio::{NativeAudioRecorder, NativeRecordedAudio},
     db::{AppConfig, AppDb, ProviderConfig},
     learning::{build_llm_learning_payload, extract_learning_rules, parse_llm_learning_rules},
@@ -136,12 +137,26 @@ pub fn select_provider_config_data(db: &AppDb, id: i64) -> Result<AppConfig, Str
 
 const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// 用最短对话请求验证供应商 base_url / API Key / 模型名是否可用。
-/// 返回人类可读的成功消息；失败时返回带原因的错误。
+/// 验证供应商配置是否可用。
+/// OpenAI-compatible：最短 chat 请求；豆包：WebSocket 握手 + full client request。
 pub fn test_provider_connection_data(provider: ProviderConfig) -> Result<String, String> {
     if !provider.has_complete_provider() {
-        return Err("请先填写完整的供应商、URL、模型和 API Key。".to_string());
+        return Err("请先填写完整的供应商配置。".to_string());
     }
+
+    if is_doubao_provider(&provider.kind, &provider.provider) {
+        let config = AppConfig {
+            provider: provider.provider.clone(),
+            base_url: provider.base_url.clone(),
+            model: provider.model.clone(),
+            api_key_ref: provider.api_key_ref.clone(),
+            hotkey: String::new(),
+            kind: provider.kind.clone(),
+            extra_json: provider.extra_json.clone(),
+        };
+        return test_doubao_connection(&config);
+    }
+
     let api_key = resolve_api_key(&provider.api_key_ref)?;
     let url = format!(
         "{}/chat/completions",
@@ -605,36 +620,52 @@ where
     if !config.has_complete_provider() {
         return insert_failed_record(
             db,
-            "请先在配置页添加并启用大模型供应商。",
+            "请先在配置页添加并启用识别供应商。",
             input.duration_seconds.max(1),
         );
     }
     let vocabulary = db.list_vocabulary().map_err(|error| error.to_string())?;
-    let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
-    let records = db.list_records(10).map_err(|error| error.to_string())?;
-    let learning_rules = db
-        .list_learning_rules(20)
-        .map_err(|error| error.to_string())?;
-    let prompt = build_prompt_context(&vocabulary, &styles, &records, &learning_rules);
-    eprintln!(
-        "[saynow] recognize_audio building request; provider={} model={} mime={} prompt_chars={} learning_rules={}",
-        config.provider,
-        config.model,
-        input.mime_type,
-        prompt.chars().count(),
-        learning_rules.len()
-    );
-    let payload = build_openai_compatible_payload(
-        &config.provider,
-        &config.model,
-        &prompt,
-        &input.audio_base64,
-        &input.mime_type,
-    );
 
     let request_started_at = std::time::Instant::now();
-    let recognition_result =
-        call_openai_compatible_chat_with_transcript(&config, payload, on_transcript);
+    let recognition_result = if is_doubao_provider(&config.kind, &config.provider) {
+        let hotwords: Vec<String> = vocabulary
+            .iter()
+            .filter(|item| item.enabled)
+            .map(|item| item.term.trim().to_string())
+            .filter(|term| !term.is_empty())
+            .collect();
+        eprintln!(
+            "[saynow] recognize_audio building doubao request; provider={} resource={} mime={} hotwords={}",
+            config.provider,
+            config.model,
+            input.mime_type,
+            hotwords.len()
+        );
+        recognize_doubao_with_transcript(&config, &input, &hotwords, on_transcript)
+    } else {
+        let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
+        let records = db.list_records(10).map_err(|error| error.to_string())?;
+        let learning_rules = db
+            .list_learning_rules(20)
+            .map_err(|error| error.to_string())?;
+        let prompt = build_prompt_context(&vocabulary, &styles, &records, &learning_rules);
+        eprintln!(
+            "[saynow] recognize_audio building request; provider={} model={} mime={} prompt_chars={} learning_rules={}",
+            config.provider,
+            config.model,
+            input.mime_type,
+            prompt.chars().count(),
+            learning_rules.len()
+        );
+        let payload = build_openai_compatible_payload(
+            &config.provider,
+            &config.model,
+            &prompt,
+            &input.audio_base64,
+            &input.mime_type,
+        );
+        call_openai_compatible_chat_with_transcript(&config, payload, on_transcript)
+    };
     let request_elapsed_ms = request_started_at.elapsed().as_millis();
     crate::runtime_log::write_line(&format!(
         "[saynow] recognition provider request finished; elapsed_ms={request_elapsed_ms}"
@@ -1417,6 +1448,8 @@ mod tests {
                 model: "qwen3.5-omni-plus".to_string(),
                 api_key_ref: "credential-manager:qwen".to_string(),
                 enabled: true,
+                kind: "openai-compatible".to_string(),
+                extra_json: "{}".to_string(),
             },
         )
         .unwrap();
@@ -1436,6 +1469,8 @@ mod tests {
                 model: "custom-model".to_string(),
                 api_key_ref: "literal:test-key".to_string(),
                 enabled: false,
+                kind: "openai-compatible".to_string(),
+                extra_json: "{}".to_string(),
             },
         )
         .unwrap();
@@ -1620,7 +1655,8 @@ mod tests {
             base_url: "https://api.xiaomimimo.com/v1".to_string(),
             model: "mimo-v2.5".to_string(),
             api_key_ref: "credential-manager:mimo".to_string(),
-            hotkey: "Alt".to_string(),
+            hotkey: "LCtrl+Meta".to_string(),
+            ..Default::default()
         })
         .unwrap();
 
@@ -1655,7 +1691,7 @@ mod tests {
         .unwrap_err();
         let records = db.list_records(1).unwrap();
 
-        assert!(error.contains("请先在配置页添加并启用大模型供应商"));
+        assert!(error.contains("请先在配置页添加并启用识别供应商"));
         assert_eq!(records[0].provider, "");
         assert_eq!(records[0].model, "");
         assert_eq!(records[0].status, RecognitionStatus::Failed);

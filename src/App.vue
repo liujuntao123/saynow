@@ -51,7 +51,7 @@ import {
   writeRuntimeLog,
 } from './api/tauri';
 import { createAudioRecorder } from './domain/audioRecorder';
-import { isEventPartOfHotkey, toHotkeyParts } from './domain/hotkeyRecorder';
+import { isEventPartOfHotkey, toHotkeyParts } from './domain/hotkeyPresets';
 import { calculateRecorderOverlayPosition } from './domain/recorderOverlayPosition';
 import ConfigPage from './pages/ConfigPage.vue';
 import DataPage from './pages/DataPage.vue';
@@ -96,7 +96,6 @@ const learningRules = ref<LearningRule[]>([]);
 const busy = ref(false);
 const saving = ref(false);
 const hotkeyRecording = ref(false);
-const configuringHotkey = ref(false);
 const audioRecorder = createAudioRecorder();
 let recordingSession: RecordingSession | null = null;
 let unlistenHotkeyState: (() => void) | null = null;
@@ -131,7 +130,7 @@ interface RecordingSession {
 }
 
 const currentPage = computed(() => activePage.value);
-const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !configuringHotkey.value && !saving.value);
+const runtimeHotkeyEnabled = computed(() => Boolean(config.value?.hotkey) && !saving.value);
 const isTauriRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 function debugLog(message: string, details?: unknown) {
@@ -516,8 +515,8 @@ async function registerRuntimeHotkey(hotkey?: string) {
   if (!isTauriRuntime) return;
   clearHotkeyMonitorRetry();
   await setHotkeyMonitor(null).catch((error) => console.error('[saynow] failed to stop hotkey monitor', error));
-  if (!hotkey || configuringHotkey.value) {
-    debugLog('runtime hotkey disabled', { hotkey, configuringHotkey: configuringHotkey.value });
+  if (!hotkey) {
+    debugLog('runtime hotkey disabled', { hotkey });
     return;
   }
 
@@ -964,14 +963,6 @@ watch(
   },
 );
 
-watch(configuringHotkey, (recording) => {
-  if (recording) {
-    void registerRuntimeHotkey(undefined);
-  } else {
-    void registerRuntimeHotkey(config.value?.hotkey);
-  }
-});
-
 onMounted(() => {
   mounted = true;
   window.addEventListener('keydown', suppressRuntimeHotkeyDomEvent, true);
@@ -1019,7 +1010,6 @@ onBeforeUnmount(() => {
       @save-provider="persistProvider"
       @select-provider="activateProvider"
       @delete-provider="removeProvider"
-      @hotkey-recording-change="configuringHotkey = $event"
     />
     <DataPage
       v-else-if="currentPage === 'data'"

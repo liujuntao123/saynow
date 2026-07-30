@@ -1,13 +1,30 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import AppIcon from '../components/AppIcon.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
 import UiPanel from '../components/UiPanel.vue';
-import { formatHotkey, isModifierOnlyHotkey } from '../domain/hotkeyRecorder';
+import {
+  DEFAULT_HOTKEY,
+  HOTKEY_PRESETS,
+  normalizeHotkeyPreset,
+  type HotkeyPresetValue,
+} from '../domain/hotkeyPresets';
+import {
+  DEFAULT_DOUBAO_ENDPOINT,
+  DEFAULT_DOUBAO_RESOURCE_ID,
+  DOUBAO_RESOURCE_OPTIONS,
+  KIND_DOUBAO_WS,
+  KIND_OPENAI_COMPATIBLE,
+  isDoubaoProvider,
+  isProviderFormComplete,
+  parseDoubaoExtra,
+  providerSubtitle,
+  serializeDoubaoExtra,
+} from '../domain/providerKinds';
 import { testProviderConnection } from '../api/tauri';
 import { useToast } from '../composables/useToast';
-import type { AppConfig, ProviderConfig } from '../types';
+import type { AppConfig, DoubaoAuthMode, ProviderConfig } from '../types';
 
 const props = defineProps<{
   config: AppConfig | null;
@@ -20,99 +37,198 @@ const emit = defineEmits<{
   saveProvider: [provider: ProviderConfig];
   selectProvider: [id: number];
   deleteProvider: [id: number];
-  hotkeyRecordingChange: [recording: boolean];
 }>();
 
 const toast = useToast();
-const providerForm = reactive<ProviderConfig>({
-  id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: true,
+const emptyProvider = (): ProviderConfig => ({
+  id: 0,
+  provider: '',
+  baseUrl: '',
+  model: '',
+  apiKeyRef: '',
+  enabled: true,
+  kind: KIND_OPENAI_COMPATIBLE,
+  extraJson: '{}',
 });
+const providerForm = reactive<ProviderConfig>(emptyProvider());
+const doubaoAuthMode = ref<DoubaoAuthMode>('legacy');
+const doubaoAccessKey = ref('');
+const showDoubaoAdvanced = ref(false);
 const selectedProviderId = ref<number | null>(null);
-const hotkey = ref('Alt');
-const recordingHotkey = ref(false);
-const pendingModifierOnlyHotkey = ref<string | null>(null);
+const hotkey = ref<HotkeyPresetValue>(DEFAULT_HOTKEY);
 const testingConnection = ref(false);
 const connectionResult = ref<{ ok: boolean; message: string } | null>(null);
-let hotkeyCaptureTimer: ReturnType<typeof window.setTimeout> | null = null;
-const HOTKEY_CAPTURE_TIMEOUT_MS = 15_000;
 
 // 模板不再预填 credential-manager 引用（那只是环境变量别名，普通用户不可用），
 // 让用户直接粘贴自己的 API Key。
 const templates = [
-  { id: 'mimo', label: 'MiMo', provider: 'MiMo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5' },
-  { id: 'mimo-asr', label: 'MiMo ASR', provider: 'MiMo ASR', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5-asr' },
-  { id: 'qwen', label: 'Qwen', provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.5-omni-plus' },
-];
+  {
+    id: 'mimo',
+    label: 'MiMo',
+    provider: 'MiMo',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    model: 'mimo-v2.5',
+    kind: KIND_OPENAI_COMPATIBLE,
+  },
+  {
+    id: 'mimo-asr',
+    label: 'MiMo ASR',
+    provider: 'MiMo ASR',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    model: 'mimo-v2.5-asr',
+    kind: KIND_OPENAI_COMPATIBLE,
+  },
+  {
+    id: 'qwen',
+    label: 'Qwen',
+    provider: 'Qwen',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen3.5-omni-plus',
+    kind: KIND_OPENAI_COMPATIBLE,
+  },
+  {
+    id: 'doubao',
+    label: '豆包 ASR',
+    provider: 'Doubao ASR',
+    baseUrl: DEFAULT_DOUBAO_ENDPOINT,
+    model: DEFAULT_DOUBAO_RESOURCE_ID,
+    kind: KIND_DOUBAO_WS,
+  },
+] as const;
 
 const activeProvider = computed(() => props.providers.find((provider) => provider.enabled) ?? null);
+const isDoubaoForm = computed(() => isDoubaoProvider(providerForm.kind, providerForm.provider));
 const providerFormComplete = computed(() =>
-  Boolean(
-    providerForm.provider.trim() &&
-    providerForm.baseUrl.trim() &&
-    providerForm.model.trim() &&
-    providerForm.apiKeyRef.trim(),
-  ),
+  isProviderFormComplete({
+    ...providerForm,
+    extraJson: isDoubaoForm.value
+      ? serializeDoubaoExtra({
+          authMode: doubaoAuthMode.value,
+          accessKey: doubaoAccessKey.value,
+        })
+      : providerForm.extraJson ?? '{}',
+  }),
 );
 
 watch(() => props.config, (config) => {
   if (!config) return;
-  hotkey.value = config.hotkey;
-  if (!props.providers.length) { Object.assign(providerForm, { id: 0, ...config, enabled: true }); selectedProviderId.value = null; }
+  hotkey.value = normalizeHotkeyPreset(config.hotkey);
+  if (!props.providers.length) {
+    applyProviderToForm({ id: 0, ...config, enabled: true });
+    selectedProviderId.value = null;
+  }
 }, { immediate: true });
 
 watch(() => props.providers, (providers) => {
   const current = providers.find((provider) => provider.id === selectedProviderId.value);
   const next = current ?? providers.find((provider) => provider.enabled) ?? providers[0];
-  if (next) { loadProvider(next); }
-  else if (props.config) { Object.assign(providerForm, { id: 0, ...props.config, enabled: true }); selectedProviderId.value = null; }
+  if (next) {
+    loadProvider(next);
+  } else if (props.config) {
+    applyProviderToForm({ id: 0, ...props.config, enabled: true });
+    selectedProviderId.value = null;
+  }
 }, { immediate: true });
 
+function applyProviderToForm(provider: ProviderConfig) {
+  Object.assign(providerForm, emptyProvider(), provider, {
+    kind: provider.kind || (isDoubaoProvider(provider.kind, provider.provider) ? KIND_DOUBAO_WS : KIND_OPENAI_COMPATIBLE),
+    extraJson: provider.extraJson || '{}',
+  });
+  const extra = parseDoubaoExtra(provider.extraJson);
+  doubaoAuthMode.value = extra.authMode;
+  doubaoAccessKey.value = extra.accessKey;
+  showDoubaoAdvanced.value = false;
+}
+
 function loadProvider(provider: ProviderConfig) {
-  Object.assign(providerForm, provider);
+  applyProviderToForm(provider);
   selectedProviderId.value = provider.id;
   connectionResult.value = null;
 }
 function createProvider() {
-  Object.assign(providerForm, { id: 0, provider: '', baseUrl: '', model: '', apiKeyRef: '', enabled: !props.providers.length });
+  applyProviderToForm({ ...emptyProvider(), enabled: !props.providers.length });
   selectedProviderId.value = null;
   connectionResult.value = null;
 }
 function applyTemplate(templateId: string) {
   const template = templates.find((item) => item.id === templateId);
   if (!template) return;
-  Object.assign(providerForm, { provider: template.provider, baseUrl: template.baseUrl, model: template.model });
+  Object.assign(providerForm, {
+    provider: template.provider,
+    baseUrl: template.baseUrl,
+    model: template.model,
+    kind: template.kind,
+    extraJson: template.kind === KIND_DOUBAO_WS
+      ? serializeDoubaoExtra({ authMode: 'legacy', accessKey: '' })
+      : '{}',
+  });
+  if (template.kind === KIND_DOUBAO_WS) {
+    doubaoAuthMode.value = 'legacy';
+    doubaoAccessKey.value = '';
+    showDoubaoAdvanced.value = false;
+  }
   connectionResult.value = null;
 }
-function isTemplateApplied(template: (typeof templates)[number]) { return providerForm.provider === template.provider && providerForm.model === template.model; }
+function isTemplateApplied(template: (typeof templates)[number]) {
+  return providerForm.provider === template.provider
+    && providerForm.model === template.model
+    && (providerForm.kind || KIND_OPENAI_COMPATIBLE) === template.kind;
+}
+
+function buildProviderPayload(): ProviderConfig {
+  const isDoubao = isDoubaoProvider(providerForm.kind, providerForm.provider);
+  return {
+    ...providerForm,
+    provider: providerForm.provider.trim(),
+    baseUrl: isDoubao
+      ? (providerForm.baseUrl.trim() || DEFAULT_DOUBAO_ENDPOINT)
+      : providerForm.baseUrl.trim(),
+    model: isDoubao
+      ? (providerForm.model.trim() || DEFAULT_DOUBAO_RESOURCE_ID)
+      : providerForm.model.trim(),
+    apiKeyRef: providerForm.apiKeyRef.trim(),
+    enabled: providerForm.enabled || !props.providers.length,
+    kind: isDoubao ? KIND_DOUBAO_WS : KIND_OPENAI_COMPATIBLE,
+    extraJson: isDoubao
+      ? serializeDoubaoExtra({
+          authMode: doubaoAuthMode.value,
+          accessKey: doubaoAccessKey.value,
+        })
+      : '{}',
+  };
+}
+
 function saveProvider() {
-  const provider = { ...providerForm, provider: providerForm.provider.trim(), baseUrl: providerForm.baseUrl.trim(), model: providerForm.model.trim(), apiKeyRef: providerForm.apiKeyRef.trim(), enabled: providerForm.enabled || !props.providers.length };
-  if (!provider.provider || !provider.baseUrl || !provider.model || !provider.apiKeyRef) {
-    toast.error('请填写完整的供应商、模型、URL 和 API Key。');
+  const provider = buildProviderPayload();
+  if (!isProviderFormComplete(provider)) {
+    toast.error(
+      isDoubaoProvider(provider.kind, provider.provider)
+        ? '请填写完整的豆包凭证（旧控制台需要 App Key + Access Key）。'
+        : '请填写完整的供应商、模型、URL 和 API Key。',
+    );
     return;
   }
   emit('saveProvider', provider);
 }
 async function testConnection() {
   if (!providerFormComplete.value) {
-    toast.error('请先填写完整的供应商、模型、URL 和 API Key。');
+    toast.error('请先填写完整的供应商配置。');
     return;
   }
   testingConnection.value = true;
   connectionResult.value = null;
   try {
-    const message = await testProviderConnection({
-      ...providerForm,
-      provider: providerForm.provider.trim(),
-      baseUrl: providerForm.baseUrl.trim(),
-      model: providerForm.model.trim(),
-      apiKeyRef: providerForm.apiKeyRef.trim(),
-    });
+    const message = await testProviderConnection(buildProviderPayload());
     connectionResult.value = { ok: true, message };
   } catch (error) {
     connectionResult.value = { ok: false, message: typeof error === 'string' ? error : String(error) };
   } finally {
     testingConnection.value = false;
   }
+}
+function selectHotkey(value: HotkeyPresetValue) {
+  hotkey.value = value;
 }
 function saveHotkey() {
   const provider = activeProvider.value;
@@ -121,70 +237,11 @@ function saveHotkey() {
     baseUrl: provider?.baseUrl ?? '',
     model: provider?.model ?? '',
     apiKeyRef: provider?.apiKeyRef ?? '',
-    hotkey: hotkey.value,
+    hotkey: normalizeHotkeyPreset(hotkey.value),
+    kind: provider?.kind ?? KIND_OPENAI_COMPATIBLE,
+    extraJson: provider?.extraJson ?? '{}',
   });
 }
-function recordHotkey(event: KeyboardEvent) {
-  if (!recordingHotkey.value) return;
-  event.preventDefault(); event.stopPropagation();
-  if (event.key === 'Escape') { stopHotkeyCapture(); return; }
-  const nextHotkey = formatHotkey(event);
-  if (!nextHotkey) return;
-  if (isModifierOnlyHotkey(nextHotkey)) { pendingModifierOnlyHotkey.value = nextHotkey; return; }
-  hotkey.value = nextHotkey; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
-}
-function finishModifierOnlyHotkey(event: KeyboardEvent) {
-  if (!recordingHotkey.value || !pendingModifierOnlyHotkey.value) return;
-  event.preventDefault(); event.stopPropagation();
-  hotkey.value = pendingModifierOnlyHotkey.value; pendingModifierOnlyHotkey.value = null; stopHotkeyCapture();
-}
-function startHotkeyCapture() {
-  recordingHotkey.value = true;
-}
-function stopHotkeyCapture() {
-  recordingHotkey.value = false;
-}
-function handleCaptureReset() {
-  if (recordingHotkey.value) stopHotkeyCapture();
-}
-function armHotkeyCaptureTimer() {
-  clearHotkeyCaptureTimer();
-  hotkeyCaptureTimer = window.setTimeout(stopHotkeyCapture, HOTKEY_CAPTURE_TIMEOUT_MS);
-}
-function clearHotkeyCaptureTimer() {
-  if (!hotkeyCaptureTimer) return;
-  window.clearTimeout(hotkeyCaptureTimer);
-  hotkeyCaptureTimer = null;
-}
-
-watch(recordingHotkey, (recording) => {
-  emit('hotkeyRecordingChange', recording);
-  if (recording) {
-    armHotkeyCaptureTimer();
-    window.addEventListener('keydown', recordHotkey, true);
-    window.addEventListener('keyup', finishModifierOnlyHotkey, true);
-    window.addEventListener('blur', handleCaptureReset);
-    document.addEventListener('visibilitychange', handleCaptureReset);
-  }
-  else {
-    clearHotkeyCaptureTimer();
-    window.removeEventListener('keydown', recordHotkey, true);
-    window.removeEventListener('keyup', finishModifierOnlyHotkey, true);
-    window.removeEventListener('blur', handleCaptureReset);
-    document.removeEventListener('visibilitychange', handleCaptureReset);
-    pendingModifierOnlyHotkey.value = null;
-  }
-}, { flush: 'sync' });
-
-onBeforeUnmount(() => {
-  stopHotkeyCapture();
-  clearHotkeyCaptureTimer();
-  window.removeEventListener('keydown', recordHotkey, true);
-  window.removeEventListener('keyup', finishModifierOnlyHotkey, true);
-  window.removeEventListener('blur', handleCaptureReset);
-  document.removeEventListener('visibilitychange', handleCaptureReset);
-  emit('hotkeyRecordingChange', false);
-});
 </script>
 
 <template>
@@ -219,7 +276,7 @@ onBeforeUnmount(() => {
                     :title="provider.enabled ? '当前使用中' : '未启用'"
                   ></span>
                 </span>
-                <em>{{ provider.model }}</em>
+                <em>{{ providerSubtitle(provider) }}</em>
               </span>
             </button>
           </div>
@@ -246,7 +303,57 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
-            <div class="form-grid provider-grid config-form-card">
+            <div v-if="isDoubaoForm" class="form-grid provider-grid config-form-card">
+              <label class="field-span-2">
+                供应商 <input v-model="providerForm.provider" placeholder="Doubao ASR" />
+              </label>
+              <label class="field-span-2">
+                鉴权方式
+                <select v-model="doubaoAuthMode">
+                  <option value="legacy">旧控制台（App Key + Access Key）</option>
+                  <option value="apiKey">新控制台（仅 API Key）</option>
+                </select>
+              </label>
+              <label class="field-span-2">
+                {{ doubaoAuthMode === 'apiKey' ? 'API Key' : 'App Key' }}
+                <input
+                  v-model="providerForm.apiKeyRef"
+                  type="password"
+                  :placeholder="doubaoAuthMode === 'apiKey' ? '粘贴 X-Api-Key' : '粘贴 App ID / App Key'"
+                />
+              </label>
+              <label v-if="doubaoAuthMode === 'legacy'" class="field-span-2">
+                Access Key
+                <input v-model="doubaoAccessKey" type="password" placeholder="粘贴 Access Token" />
+              </label>
+              <label class="field-span-2">
+                Resource Id
+                <select v-model="providerForm.model">
+                  <option
+                    v-for="option in DOUBAO_RESOURCE_OPTIONS"
+                    :key="option.id"
+                    :value="option.value"
+                  >
+                    {{ option.label }}（{{ option.value }}）
+                  </option>
+                </select>
+              </label>
+              <div class="field-span-2 doubao-advanced">
+                <button
+                  class="ghost-button compact-action-button"
+                  type="button"
+                  @click="showDoubaoAdvanced = !showDoubaoAdvanced"
+                >
+                  {{ showDoubaoAdvanced ? '收起高级选项' : '高级选项（Endpoint）' }}
+                </button>
+                <label v-if="showDoubaoAdvanced">
+                  WebSocket Endpoint
+                  <input v-model="providerForm.baseUrl" :placeholder="DEFAULT_DOUBAO_ENDPOINT" />
+                </label>
+              </div>
+            </div>
+
+            <div v-else class="form-grid provider-grid config-form-card">
               <label>
                 供应商 <input v-model="providerForm.provider" placeholder="输入名称" />
               </label>
@@ -303,15 +410,27 @@ onBeforeUnmount(() => {
 
       <div class="config-side-stack">
         <UiPanel title="全局唤醒快捷键" icon="keyboard" class="hotkey-panel custom-glass-panel">
-          <div class="hotkey-recorder" :class="{ recording: recordingHotkey }" tabindex="0" @keydown="recordHotkey">
-            <div class="recorder-halo"></div>
-            <span>{{ recordingHotkey ? (pendingModifierOnlyHotkey ? `${pendingModifierOnlyHotkey}（松开确认）` : '请按下按键...') : hotkey || '未设置（热键已禁用）' }}</span>
-            <small v-if="recordingHotkey" class="hotkey-hint">按组合键设置；单独修饰键需按下后松开确认；Esc 取消</small>
+          <div class="hotkey-picker">
+            <button
+              v-for="preset in HOTKEY_PRESETS"
+              :key="preset.id"
+              class="hotkey-option"
+              :class="{ selected: hotkey === preset.value }"
+              type="button"
+              :disabled="saving"
+              @click="selectHotkey(preset.value)"
+            >
+              <span class="hotkey-option-radio" aria-hidden="true"></span>
+              <span class="hotkey-option-copy">
+                <strong>{{ preset.label }}</strong>
+                <em>{{ preset.description }}</em>
+              </span>
+            </button>
+            <p class="hotkey-hint">按住所选快捷键开始录音，松开结束。</p>
             <div class="hotkey-actions">
-              <button class="secondary-button icon-only-button" type="button" title="录制快捷键" aria-label="录制快捷键" @click="startHotkeyCapture"><AppIcon name="keyboard" /></button>
-              <button class="ghost-button icon-only-button" type="button" title="清空（禁用热键）" aria-label="清空快捷键" @click="hotkey = ''"><AppIcon name="trash" /></button>
-              <button v-if="recordingHotkey" class="ghost-button icon-only-button" type="button" title="取消录制" aria-label="取消录制" @click="stopHotkeyCapture"><AppIcon name="x" /></button>
-              <button class="primary-button icon-only-button" type="button" :disabled="saving" title="保存快捷键" aria-label="保存快捷键" @click="saveHotkey"><AppIcon name="save" /></button>
+              <button class="primary-button" type="button" :disabled="saving" @click="saveHotkey">
+                <AppIcon name="save" /> 保存快捷键
+              </button>
             </div>
           </div>
         </UiPanel>
@@ -343,9 +462,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .full-width { width: 100%; gap: 8px; border-radius: 12px; }
 
 /* 表单输入框全局优雅重写 */
-input, textarea { width: 100%; border: 1px solid #e1e9e6; border-radius: 12px; padding: 12px 14px; background: #f8fbfa; color: #182321; transition: all 0.3s; box-sizing: border-box; outline: none; }
-input:focus, textarea:focus { border-color: #0f8f83; background: #fff; box-shadow: 0 0 0 3px rgba(15, 143, 131, 0.1); }
+input, textarea, select { width: 100%; border: 1px solid #e1e9e6; border-radius: 12px; padding: 12px 14px; background: #f8fbfa; color: #182321; transition: all 0.3s; box-sizing: border-box; outline: none; font: inherit; }
+input:focus, textarea:focus, select:focus { border-color: #0f8f83; background: #fff; box-shadow: 0 0 0 3px rgba(15, 143, 131, 0.1); }
 label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-weight: 600; color: #62706c; }
+.doubao-advanced { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.doubao-advanced .ghost-button { align-self: flex-start; height: 34px; padding: 0 12px; }
 
 /* =========== 页面专属结构重塑 =========== */
 .config-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 20px; align-items: stretch; flex: 1 1 auto; min-height: 0; overflow: hidden; }
@@ -396,21 +517,33 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .compact-action-button { gap: 6px; }
 .compact-action-button .app-icon { width: 15px; height: 15px; }
 
-/* 快捷键艺术录制区 */
+/* 快捷键预设选择 */
 .config-side-stack { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; }
 :deep(.hotkey-panel.custom-glass-panel) { padding: 18px; }
 :deep(.hotkey-panel.custom-glass-panel .ui-panel-header) { padding-bottom: 14px; margin-bottom: 18px; }
-.hotkey-recorder {
-  position: relative; height: 156px; border-radius: 14px; overflow: hidden;
-  background: linear-gradient(180deg, #fafafa 0%, #f0f0f0 100%); border: 1px solid rgba(0,0,0,0.05);
-  display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 18px; transition: all 0.4s; outline: none;
+.hotkey-picker { display: flex; flex-direction: column; gap: 12px; }
+.hotkey-option {
+  width: 100%; display: flex; align-items: flex-start; justify-content: flex-start; gap: 12px; padding: 14px;
+  border-radius: 14px; background: #f7faf9; border: 1px solid transparent; text-align: left;
 }
-.recorder-halo { position: absolute; top: 50%; left: 50%; width: 110px; height: 110px; background: #0f8f83; filter: blur(42px); opacity: 0; transform: translate(-50%, -50%); transition: opacity 0.5s; pointer-events: none; }
-.hotkey-recorder.recording { box-shadow: inset 0 0 0 2px #0f8f83; }
-.hotkey-recorder.recording .recorder-halo { opacity: 0.15; animation: pulseHalo 2s infinite; }
-.hotkey-recorder span { position: relative; z-index: 1; font-size: 20px; font-weight: 700; color: #1d1d1f; letter-spacing: 0; text-align: center; padding: 0 12px; }
-.hotkey-hint { position: relative; z-index: 1; margin: -10px 12px 0; color: #8a9793; font-size: 11px; line-height: 1.5; text-align: center; }
-.hotkey-actions { position: relative; z-index: 1; display: flex; gap: 8px; }
-.hotkey-actions .icon-only-button { width: 34px; height: 34px; }
-@keyframes pulseHalo { 0% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.2); } 100% { transform: translate(-50%, -50%) scale(1); } }
+.hotkey-option:hover:not(:disabled) { background: #eef6f4; }
+.hotkey-option.selected {
+  background: rgba(15, 143, 131, 0.08); border-color: rgba(15, 143, 131, 0.28);
+}
+.hotkey-option-radio {
+  flex: 0 0 16px; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%;
+  border: 2px solid #b7c5c1; box-sizing: border-box;
+}
+.hotkey-option.selected .hotkey-option-radio {
+  border-color: #0f8f83; box-shadow: inset 0 0 0 3px #0f8f83;
+}
+.hotkey-option-copy {
+  display: flex; flex: 1 1 auto; flex-direction: column; align-items: flex-start; gap: 4px;
+  min-width: 0; text-align: left;
+}
+.hotkey-option-copy strong { font-size: 14px; font-weight: 700; color: #1d1d1f; }
+.hotkey-option-copy em { font-size: 12px; font-style: normal; color: #8a9793; line-height: 1.4; }
+.hotkey-hint { margin: 0; color: #8a9793; font-size: 11px; line-height: 1.5; }
+.hotkey-actions { display: flex; justify-content: flex-end; }
+.hotkey-actions .primary-button { gap: 6px; }
 </style>

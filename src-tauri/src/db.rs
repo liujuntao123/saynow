@@ -9,7 +9,35 @@ use crate::models::{
     RecognitionRecord, RecognitionStatus, StylePrompt, VocabularyItem,
 };
 
-const DEFAULT_HOTKEY: &str = "Alt";
+const DEFAULT_HOTKEY: &str = "LCtrl+Meta";
+const PRESET_RALT: &str = "RAlt";
+const PRESET_LCTRL_META: &str = "LCtrl+Meta";
+
+/// Maps any stored hotkey onto the two supported presets: LCtrl+Meta or RAlt.
+fn normalize_legacy_hotkey(hotkey: &str) -> Option<String> {
+    let trimmed = hotkey.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == PRESET_LCTRL_META || trimmed == PRESET_RALT {
+        return None;
+    }
+
+    // Explicit right-Alt family stays on RAlt.
+    if trimmed == "RAlt"
+        || trimmed == "AltRight"
+        || trimmed == "AltGr"
+        || trimmed.eq_ignore_ascii_case("ralt")
+    {
+        if trimmed == PRESET_RALT {
+            return None;
+        }
+        return Some(PRESET_RALT.to_string());
+    }
+
+    // Everything else (F8, Alt, LAlt, free-form combos, …) → default preset.
+    Some(DEFAULT_HOTKEY.to_string())
+}
 
 pub struct AppDb {
     conn: Mutex<Connection>,
@@ -23,6 +51,12 @@ pub struct AppConfig {
     pub model: String,
     pub api_key_ref: String,
     pub hotkey: String,
+    /// openai-compatible | doubao-ws
+    #[serde(default = "default_provider_kind")]
+    pub kind: String,
+    /// 供应商扩展 JSON（豆包：authMode / accessKey 等）
+    #[serde(default = "default_extra_json")]
+    pub extra_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +68,18 @@ pub struct ProviderConfig {
     pub model: String,
     pub api_key_ref: String,
     pub enabled: bool,
+    #[serde(default = "default_provider_kind")]
+    pub kind: String,
+    #[serde(default = "default_extra_json")]
+    pub extra_json: String,
+}
+
+fn default_provider_kind() -> String {
+    "openai-compatible".to_string()
+}
+
+fn default_extra_json() -> String {
+    "{}".to_string()
 }
 
 impl Default for AppConfig {
@@ -44,6 +90,8 @@ impl Default for AppConfig {
             model: String::new(),
             api_key_ref: String::new(),
             hotkey: DEFAULT_HOTKEY.to_string(),
+            kind: default_provider_kind(),
+            extra_json: default_extra_json(),
         }
     }
 }
@@ -186,6 +234,30 @@ impl AppDb {
             "evidence_recognition_ids",
             "evidence_recognition_ids TEXT NOT NULL DEFAULT ''",
         )?;
+        Self::add_column_if_missing(
+            &conn,
+            "provider_configs",
+            "kind",
+            "kind TEXT NOT NULL DEFAULT 'openai-compatible'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "provider_configs",
+            "extra_json",
+            "extra_json TEXT NOT NULL DEFAULT '{}'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "app_config",
+            "kind",
+            "kind TEXT NOT NULL DEFAULT 'openai-compatible'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "app_config",
+            "extra_json",
+            "extra_json TEXT NOT NULL DEFAULT '{}'",
+        )?;
         Ok(())
     }
 
@@ -209,8 +281,8 @@ impl AppDb {
     pub fn get_config(&self) -> Result<AppConfig> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
-        if config.hotkey.trim() == "F8" {
-            config.hotkey = DEFAULT_HOTKEY.to_string();
+        if let Some(normalized) = normalize_legacy_hotkey(config.hotkey.trim()) {
+            config.hotkey = normalized;
             Self::save_config_from_conn(&conn, &config)?;
         }
         if let Some(provider) = Self::get_enabled_provider_from_conn(&conn)? {
@@ -218,6 +290,8 @@ impl AppDb {
             config.base_url = provider.base_url;
             config.model = provider.model;
             config.api_key_ref = provider.api_key_ref;
+            config.kind = provider.kind;
+            config.extra_json = provider.extra_json;
         }
         Ok(config)
     }
@@ -239,12 +313,15 @@ impl AppDb {
     pub fn save_provider_config(&self, provider: &ProviderConfig) -> Result<()> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let enabled = provider.enabled || Self::provider_count_from_conn(&conn)? == 0;
+        let kind = normalize_stored_kind(&provider.kind, &provider.provider);
+        let extra_json = normalize_extra_json(&provider.extra_json);
         let id = if provider.id > 0 {
             conn.execute(
                 r#"
                 UPDATE provider_configs
-                SET provider = ?1, base_url = ?2, model = ?3, api_key_ref = ?4, enabled = ?5
-                WHERE id = ?6
+                SET provider = ?1, base_url = ?2, model = ?3, api_key_ref = ?4, enabled = ?5,
+                    kind = ?6, extra_json = ?7
+                WHERE id = ?8
                 "#,
                 params![
                     provider.provider,
@@ -252,6 +329,8 @@ impl AppDb {
                     provider.model,
                     provider.api_key_ref,
                     if enabled { 1 } else { 0 },
+                    kind,
+                    extra_json,
                     provider.id
                 ],
             )?;
@@ -259,15 +338,17 @@ impl AppDb {
         } else {
             conn.execute(
                 r#"
-                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled)
-                VALUES (?1, ?2, ?3, ?4, ?5)
+                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled, kind, extra_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 "#,
                 params![
                     provider.provider,
                     provider.base_url,
                     provider.model,
                     provider.api_key_ref,
-                    if enabled { 1 } else { 0 }
+                    if enabled { 1 } else { 0 },
+                    kind,
+                    extra_json
                 ],
             )?;
             conn.last_insert_rowid()
@@ -289,6 +370,8 @@ impl AppDb {
             config.base_url = provider.base_url;
             config.model = provider.model;
             config.api_key_ref = provider.api_key_ref;
+            config.kind = provider.kind;
+            config.extra_json = provider.extra_json;
         }
         Self::save_config_from_conn(&conn, &config)?;
         Ok(config)
@@ -324,6 +407,8 @@ impl AppDb {
             config.base_url = provider.base_url;
             config.model = provider.model;
             config.api_key_ref = provider.api_key_ref;
+            config.kind = provider.kind;
+            config.extra_json = provider.extra_json;
             Self::save_config_from_conn(&conn, &config)?;
         } else {
             let mut config = Self::get_config_from_conn(&conn)?.unwrap_or_default();
@@ -331,6 +416,8 @@ impl AppDb {
             config.base_url.clear();
             config.model.clear();
             config.api_key_ref.clear();
+            config.kind = default_provider_kind();
+            config.extra_json = default_extra_json();
             Self::save_config_from_conn(&conn, &config)?;
         }
         Ok(())
@@ -960,7 +1047,7 @@ impl AppDb {
 
     fn get_config_from_conn(conn: &Connection) -> Result<Option<AppConfig>> {
         let result = conn.query_row(
-            "SELECT provider, base_url, model, api_key_ref, hotkey FROM app_config WHERE id = 1",
+            "SELECT provider, base_url, model, api_key_ref, hotkey, kind, extra_json FROM app_config WHERE id = 1",
             [],
             |row| {
                 Ok(AppConfig {
@@ -969,6 +1056,8 @@ impl AppDb {
                     model: row.get(2)?,
                     api_key_ref: row.get(3)?,
                     hotkey: row.get(4)?,
+                    kind: row.get(5)?,
+                    extra_json: row.get(6)?,
                 })
             },
         );
@@ -980,24 +1069,31 @@ impl AppDb {
     }
 
     fn save_config_from_conn(conn: &Connection, config: &AppConfig) -> Result<()> {
-        let hotkey = config.hotkey.trim();
+        let hotkey = normalize_legacy_hotkey(config.hotkey.trim())
+            .unwrap_or_else(|| config.hotkey.trim().to_string());
+        let kind = normalize_stored_kind(&config.kind, &config.provider);
+        let extra_json = normalize_extra_json(&config.extra_json);
         conn.execute(
             r#"
-            INSERT INTO app_config (id, provider, base_url, model, api_key_ref, hotkey)
-            VALUES (1, ?1, ?2, ?3, ?4, ?5)
+            INSERT INTO app_config (id, provider, base_url, model, api_key_ref, hotkey, kind, extra_json)
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
                 base_url = excluded.base_url,
                 model = excluded.model,
                 api_key_ref = excluded.api_key_ref,
-                hotkey = excluded.hotkey
+                hotkey = excluded.hotkey,
+                kind = excluded.kind,
+                extra_json = excluded.extra_json
             "#,
             params![
                 config.provider,
                 config.base_url,
                 config.model,
                 config.api_key_ref,
-                hotkey
+                hotkey,
+                kind,
+                extra_json
             ],
         )?;
         Ok(())
@@ -1005,35 +1101,30 @@ impl AppDb {
 
     fn list_provider_configs_from_conn(conn: &Connection) -> Result<Vec<ProviderConfig>> {
         let mut stmt = conn.prepare(
-            "SELECT id, provider, base_url, model, api_key_ref, enabled FROM provider_configs ORDER BY enabled DESC, id DESC",
+            "SELECT id, provider, base_url, model, api_key_ref, enabled, kind, extra_json FROM provider_configs ORDER BY enabled DESC, id DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ProviderConfig {
-                id: row.get(0)?,
-                provider: row.get(1)?,
-                base_url: row.get(2)?,
-                model: row.get(3)?,
-                api_key_ref: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? == 1,
-            })
-        })?;
+        let rows = stmt.query_map([], |row| Self::provider_config_from_row(row))?;
         rows.collect()
+    }
+
+    fn provider_config_from_row(row: &Row<'_>) -> Result<ProviderConfig> {
+        Ok(ProviderConfig {
+            id: row.get(0)?,
+            provider: row.get(1)?,
+            base_url: row.get(2)?,
+            model: row.get(3)?,
+            api_key_ref: row.get(4)?,
+            enabled: row.get::<_, i64>(5)? == 1,
+            kind: row.get(6)?,
+            extra_json: row.get(7)?,
+        })
     }
 
     fn get_enabled_provider_from_conn(conn: &Connection) -> Result<Option<ProviderConfig>> {
         let result = conn.query_row(
-            "SELECT id, provider, base_url, model, api_key_ref, enabled FROM provider_configs WHERE enabled = 1 ORDER BY id DESC LIMIT 1",
+            "SELECT id, provider, base_url, model, api_key_ref, enabled, kind, extra_json FROM provider_configs WHERE enabled = 1 ORDER BY id DESC LIMIT 1",
             [],
-            |row| {
-                Ok(ProviderConfig {
-                    id: row.get(0)?,
-                    provider: row.get(1)?,
-                    base_url: row.get(2)?,
-                    model: row.get(3)?,
-                    api_key_ref: row.get(4)?,
-                    enabled: row.get::<_, i64>(5)? == 1,
-                })
-            },
+            Self::provider_config_from_row,
         );
         match result {
             Ok(provider) => Ok(Some(provider)),
@@ -1049,6 +1140,8 @@ impl AppDb {
     }
 
     fn upsert_provider_from_config(conn: &Connection, config: &AppConfig) -> Result<()> {
+        let kind = normalize_stored_kind(&config.kind, &config.provider);
+        let extra_json = normalize_extra_json(&config.extra_json);
         let existing_id = conn
             .query_row(
                 "SELECT id FROM provider_configs WHERE provider = ?1 AND model = ?2 LIMIT 1",
@@ -1060,23 +1153,25 @@ impl AppDb {
             conn.execute(
                 r#"
                 UPDATE provider_configs
-                SET base_url = ?1, api_key_ref = ?2, enabled = 1
-                WHERE id = ?3
+                SET base_url = ?1, api_key_ref = ?2, enabled = 1, kind = ?3, extra_json = ?4
+                WHERE id = ?5
                 "#,
-                params![config.base_url, config.api_key_ref, id],
+                params![config.base_url, config.api_key_ref, kind, extra_json, id],
             )?;
             Self::select_provider_config_from_conn(conn, id)?;
         } else {
             conn.execute(
                 r#"
-                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled)
-                VALUES (?1, ?2, ?3, ?4, 1)
+                INSERT INTO provider_configs (provider, base_url, model, api_key_ref, enabled, kind, extra_json)
+                VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)
                 "#,
                 params![
                     config.provider,
                     config.base_url,
                     config.model,
-                    config.api_key_ref
+                    config.api_key_ref,
+                    kind,
+                    extra_json
                 ],
             )?;
             Self::select_provider_config_from_conn(conn, conn.last_insert_rowid())?;
@@ -1148,21 +1243,63 @@ impl AppDb {
     }
 }
 
+fn normalize_stored_kind(kind: &str, provider: &str) -> String {
+    crate::asr::doubao::config::normalize_provider_kind(kind, provider)
+}
+
+fn normalize_extra_json(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return default_extra_json();
+    }
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        trimmed.to_string()
+    } else {
+        default_extra_json()
+    }
+}
+
 impl AppConfig {
     pub fn has_complete_provider(&self) -> bool {
-        !self.provider.trim().is_empty()
-            && !self.base_url.trim().is_empty()
-            && !self.model.trim().is_empty()
-            && !self.api_key_ref.trim().is_empty()
+        provider_fields_complete(
+            &self.kind,
+            &self.provider,
+            &self.base_url,
+            &self.model,
+            &self.api_key_ref,
+            &self.extra_json,
+        )
     }
 }
 
 impl ProviderConfig {
     pub fn has_complete_provider(&self) -> bool {
-        !self.provider.trim().is_empty()
-            && !self.base_url.trim().is_empty()
-            && !self.model.trim().is_empty()
-            && !self.api_key_ref.trim().is_empty()
+        provider_fields_complete(
+            &self.kind,
+            &self.provider,
+            &self.base_url,
+            &self.model,
+            &self.api_key_ref,
+            &self.extra_json,
+        )
+    }
+}
+
+fn provider_fields_complete(
+    kind: &str,
+    provider: &str,
+    base_url: &str,
+    model: &str,
+    api_key_ref: &str,
+    extra_json: &str,
+) -> bool {
+    if crate::asr::is_doubao_provider(kind, provider) {
+        crate::asr::doubao::config::doubao_complete(provider, base_url, model, api_key_ref, extra_json)
+    } else {
+        !provider.trim().is_empty()
+            && !base_url.trim().is_empty()
+            && !model.trim().is_empty()
+            && !api_key_ref.trim().is_empty()
     }
 }
 
@@ -1178,7 +1315,8 @@ mod tests {
             base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             model: "qwen3.5-omni-plus".to_string(),
             api_key_ref: "credential-manager:qwen".to_string(),
-            hotkey: "Alt+Space".to_string(),
+            hotkey: "LCtrl+Meta".to_string(),
+            ..Default::default()
         };
 
         db.save_config(&config).unwrap();
@@ -1298,20 +1436,52 @@ mod tests {
     }
 
     #[test]
-    fn stores_alt_hotkeys_without_rewriting_them() {
+    fn migrates_legacy_hotkeys_to_supported_presets() {
         let db = AppDb::in_memory().unwrap();
-        let config = AppConfig {
+
+        db.save_config(&AppConfig {
             hotkey: "Alt".to_string(),
             ..Default::default()
-        };
+        })
+        .unwrap();
+        assert_eq!(db.get_config().unwrap().hotkey, "LCtrl+Meta");
 
-        db.save_config(&config).unwrap();
+        db.save_config(&AppConfig {
+            hotkey: "LAlt".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.get_config().unwrap().hotkey, "LCtrl+Meta");
 
-        assert_eq!(db.get_config().unwrap().hotkey, "Alt");
+        db.save_config(&AppConfig {
+            hotkey: "AltRight".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.get_config().unwrap().hotkey, "RAlt");
     }
 
     #[test]
-    fn repairs_previous_f8_default_migration_to_alt() {
+    fn stores_supported_hotkey_presets_without_rewriting_them() {
+        let db = AppDb::in_memory().unwrap();
+
+        db.save_config(&AppConfig {
+            hotkey: "RAlt".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.get_config().unwrap().hotkey, "RAlt");
+
+        db.save_config(&AppConfig {
+            hotkey: "LCtrl+Meta".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.get_config().unwrap().hotkey, "LCtrl+Meta");
+    }
+
+    #[test]
+    fn repairs_previous_f8_default_migration_to_lctrl_meta() {
         let db = AppDb::in_memory().unwrap();
         let config = AppConfig {
             hotkey: "F8".to_string(),
@@ -1320,6 +1490,32 @@ mod tests {
 
         db.save_config(&config).unwrap();
 
-        assert_eq!(db.get_config().unwrap().hotkey, "Alt");
+        assert_eq!(db.get_config().unwrap().hotkey, "LCtrl+Meta");
+    }
+
+    #[test]
+    fn stores_doubao_provider_kind_and_extra_json() {
+        let db = AppDb::in_memory().unwrap();
+        db.save_provider_config(&ProviderConfig {
+            id: 0,
+            provider: "Doubao ASR".to_string(),
+            base_url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async".to_string(),
+            model: "volc.seedasr.sauc.duration".to_string(),
+            api_key_ref: "app-key".to_string(),
+            enabled: true,
+            kind: "doubao-ws".to_string(),
+            extra_json: r#"{"authMode":"legacy","accessKey":"token"}"#.to_string(),
+        })
+        .unwrap();
+
+        let providers = db.list_provider_configs().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].kind, "doubao-ws");
+        assert!(providers[0].extra_json.contains("legacy"));
+        assert!(providers[0].has_complete_provider());
+
+        let config = db.get_config().unwrap();
+        assert_eq!(config.kind, "doubao-ws");
+        assert_eq!(config.model, "volc.seedasr.sauc.duration");
     }
 }

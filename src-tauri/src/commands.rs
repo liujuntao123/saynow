@@ -776,15 +776,62 @@ where
 }
 
 fn apply_text_preferences(text: String, preferences: &PersonalizationPreferences) -> String {
+    let mut text = remove_spaces_between_han_characters(&text);
     if !preferences.remove_trailing_period {
         return text;
     }
 
-    let mut text = text;
     if matches!(text.chars().last(), Some('。' | '.')) {
         text.pop();
     }
     text
+}
+
+fn remove_spaces_between_han_characters(text: &str) -> String {
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut normalized = String::with_capacity(text.len());
+    let mut last_emitted = None;
+    let mut index = 0;
+
+    while index < characters.len() {
+        let character = characters[index];
+        if is_horizontal_whitespace(character) && last_emitted.is_some_and(is_han_character) {
+            let whitespace_start = index;
+            while index < characters.len() && is_horizontal_whitespace(characters[index]) {
+                index += 1;
+            }
+            if index < characters.len() && is_han_character(characters[index]) {
+                continue;
+            }
+            for whitespace in &characters[whitespace_start..index] {
+                normalized.push(*whitespace);
+                last_emitted = Some(*whitespace);
+            }
+            continue;
+        }
+
+        normalized.push(character);
+        last_emitted = Some(character);
+        index += 1;
+    }
+
+    normalized
+}
+
+fn is_horizontal_whitespace(character: char) -> bool {
+    character.is_whitespace() && !matches!(character, '\n' | '\r')
+}
+
+fn is_han_character(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x2EE5F
+            | 0x2F800..=0x2FA1F
+            | 0x30000..=0x323AF
+    )
 }
 
 fn persist_recognized_text<F>(
@@ -1830,6 +1877,26 @@ mod tests {
         assert_eq!(
             apply_text_preferences("你好。".to_string(), &disabled),
             "你好。"
+        );
+    }
+
+    #[test]
+    fn text_preferences_remove_horizontal_spaces_only_between_han_characters() {
+        let preferences = PersonalizationPreferences {
+            remove_trailing_period: false,
+        };
+
+        assert_eq!(
+            apply_text_preferences("你 好  世\t界".to_string(), &preferences),
+            "你好世界"
+        );
+        assert_eq!(
+            apply_text_preferences("你好 world 2026 年".to_string(), &preferences),
+            "你好 world 2026 年"
+        );
+        assert_eq!(
+            apply_text_preferences("第一段\n第二段".to_string(), &preferences),
+            "第一段\n第二段"
         );
     }
 }

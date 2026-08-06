@@ -53,9 +53,8 @@ jobs:
 
             ## Change Log
 
-            - 新增 Qwen Audio ASR 供应商，支持 `qwen-audio-3.0-asr-flash` 的 DashScope 多模态接口。
-            - 自动兼容 Workspace 的 `/api/v1` 与 `/compatible-mode/v1` 基础地址，并解析模型专用响应结构。
-            - 热键按住确认延迟由 300ms 缩短为 200ms。
+            - 自动删除识别文本中两个中文字符之间的多余空格。
+            - 保留换行以及中文与英文、数字之间的正常空格。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

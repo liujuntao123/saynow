@@ -43,7 +43,8 @@ const correctionPreview = computed(() => correctionRawText.value.trim());
 const stripText = computed(() => {
   if (state.value === 'correctionPrompt') return correctionPreview.value || label.value;
   if (state.value === 'error') return '识别失败，可点击重试';
-  return transcriptPreview.value || label.value;
+  // 录音 / 识别中不展示状态文案，仅在有转写内容时显示
+  return transcriptPreview.value;
 });
 const ariaLabel = computed(() => {
   const preview = state.value.startsWith('correction') ? correctionPreview.value : transcriptPreview.value;
@@ -214,7 +215,7 @@ onBeforeUnmount(() => {
         {{ recordingClock }}
       </span>
 
-      <div class="strip-content">
+      <div v-if="stripText" class="strip-content">
         <span class="strip-text">{{ stripText }}</span>
         <span class="strip-cursor"></span>
       </div>
@@ -280,7 +281,7 @@ onBeforeUnmount(() => {
   z-index: 1;
   display: flex;
   width: fit-content;
-  min-width: 136px;
+  min-width: 0;
   max-width: min(640px, calc(100vw - 10px));
   min-height: 40px;
   align-items: center;

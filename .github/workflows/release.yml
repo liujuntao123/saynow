@@ -53,8 +53,8 @@ jobs:
 
             ## Change Log
 
-            - 自动删除识别文本中两个中文字符之间的多余空格。
-            - 保留换行以及中文与英文、数字之间的正常空格。
+            - 录音和识别过程中不再显示占位状态文案，仅在有转写内容时展示文本。
+            - 无转写文本时收紧录音浮层宽度，减少界面遮挡。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

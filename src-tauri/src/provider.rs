@@ -1,5 +1,10 @@
+use base64::{engine::general_purpose, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+pub const KIND_DASHSCOPE_MULTIMODAL: &str = "dashscope-multimodal";
+pub const QWEN_AUDIO_ASR_MODEL: &str = "qwen-audio-3.0-asr-flash";
+const DASHSCOPE_MULTIMODAL_PATH: &str = "services/aigc/multimodal-generation/generation";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +27,89 @@ pub fn build_openai_compatible_payload(
     }
 
     build_mimo_payload(model, prompt, audio_base64, mime_type)
+}
+
+pub fn is_dashscope_multimodal_provider(kind: &str, model: &str) -> bool {
+    kind.trim().eq_ignore_ascii_case(KIND_DASHSCOPE_MULTIMODAL)
+        || model.trim().eq_ignore_ascii_case(QWEN_AUDIO_ASR_MODEL)
+}
+
+pub fn dashscope_multimodal_url(base_url: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.ends_with(DASHSCOPE_MULTIMODAL_PATH) {
+        return base_url.to_string();
+    }
+    if let Some(origin) = base_url.strip_suffix("/compatible-mode/v1") {
+        return format!("{origin}/api/v1/{DASHSCOPE_MULTIMODAL_PATH}");
+    }
+    if base_url.ends_with("/api/v1") {
+        return format!("{base_url}/{DASHSCOPE_MULTIMODAL_PATH}");
+    }
+    format!("{base_url}/api/v1/{DASHSCOPE_MULTIMODAL_PATH}")
+}
+
+pub fn build_dashscope_multimodal_payload(
+    model: &str,
+    audio_base64: &str,
+    mime_type: &str,
+) -> Value {
+    let audio_data = audio_data_url_with_mime(audio_base64, mime_type);
+    json!({
+        "model": model,
+        "input": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": audio_data
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        "parameters": {
+            "format": audio_format_from_mime(mime_type),
+            "sample_rate": wav_sample_rate(audio_base64).unwrap_or(16_000).to_string()
+        }
+    })
+}
+
+pub fn extract_dashscope_multimodal_text(response: &Value) -> Option<String> {
+    [
+        "/output/text",
+        "/output/output/sentence/text",
+        "/output/choices/0/message/content/0/text",
+    ]
+    .iter()
+    .filter_map(|path| response.pointer(path).and_then(Value::as_str))
+    .map(str::trim)
+    .find(|text| !text.is_empty())
+    .map(ToOwned::to_owned)
+}
+
+pub fn dashscope_connection_test_audio_base64() -> String {
+    let sample_rate = 16_000u32;
+    let samples = sample_rate;
+    let data_size = samples * 2;
+    let mut wav = Vec::with_capacity(44 + data_size as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_size.to_le_bytes());
+    wav.resize(44 + data_size as usize, 0);
+    general_purpose::STANDARD.encode(wav)
 }
 
 fn build_mimo_payload(model: &str, prompt: &str, audio_base64: &str, mime_type: &str) -> Value {
@@ -217,6 +305,21 @@ fn audio_data_url_without_mime(audio_base64: &str) -> String {
     }
 }
 
+fn wav_sample_rate(audio_base64: &str) -> Option<u32> {
+    let trimmed = audio_base64.trim();
+    let encoded = trimmed
+        .find("base64,")
+        .map(|index| &trimmed[index + "base64,".len()..])
+        .unwrap_or(trimmed);
+    // Only the canonical WAV header is needed; avoid decoding the full recording a second time.
+    let encoded_header = encoded.get(..40)?;
+    let wav = general_purpose::STANDARD.decode(encoded_header).ok()?;
+    if wav.len() < 28 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return None;
+    }
+    Some(u32::from_le_bytes(wav[24..28].try_into().ok()?))
+}
+
 fn audio_format_from_mime(mime_type: &str) -> &'static str {
     let mime = mime_type.to_ascii_lowercase();
     if mime.contains("wav") {
@@ -320,6 +423,69 @@ mod tests {
         assert_eq!(
             payload["messages"][1]["content"][0]["input_audio"]["format"],
             "wav"
+        );
+    }
+
+    #[test]
+    fn builds_dashscope_multimodal_payload_with_data_url_and_wav_sample_rate() {
+        let audio = dashscope_connection_test_audio_base64();
+        let payload = build_dashscope_multimodal_payload(QWEN_AUDIO_ASR_MODEL, &audio, "audio/wav");
+
+        assert_eq!(payload["model"], QWEN_AUDIO_ASR_MODEL);
+        assert_eq!(
+            payload["input"]["messages"][0]["content"][0]["type"],
+            "input_audio"
+        );
+        assert!(
+            payload["input"]["messages"][0]["content"][0]["input_audio"]["data"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:audio/wav;base64,")
+        );
+        assert_eq!(payload["parameters"]["format"], "wav");
+        assert_eq!(payload["parameters"]["sample_rate"], "16000");
+        assert!(is_dashscope_multimodal_provider(
+            KIND_DASHSCOPE_MULTIMODAL,
+            "custom-model"
+        ));
+        assert!(is_dashscope_multimodal_provider(
+            "openai-compatible",
+            QWEN_AUDIO_ASR_MODEL
+        ));
+    }
+
+    #[test]
+    fn builds_dashscope_multimodal_endpoint_from_workspace_base_url() {
+        assert_eq!(
+            dashscope_multimodal_url("https://workspace.cn-beijing.maas.aliyuncs.com/api/v1"),
+            "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        );
+        assert_eq!(
+            dashscope_multimodal_url(
+                "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+            ),
+            "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        );
+        assert_eq!(
+            dashscope_multimodal_url(
+                "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+            ),
+            "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        );
+    }
+
+    #[test]
+    fn extracts_dashscope_multimodal_response_text() {
+        let response = json!({
+            "output": {
+                "output": { "sentence": { "text": "  嵌套识别文本  " } },
+                "text": ""
+            }
+        });
+
+        assert_eq!(
+            extract_dashscope_multimodal_text(&response),
+            Some("嵌套识别文本".to_string())
         );
     }
 

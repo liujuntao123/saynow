@@ -15,8 +15,11 @@ use crate::{
     platform::{current_platform_status, inject_text, replace_last_injected_text, PlatformStatus},
     prompt::build_prompt_context,
     provider::{
-        build_openai_compatible_payload, extract_openai_compatible_text,
-        first_openai_compatible_stream_text, push_openai_compatible_stream_line,
+        build_dashscope_multimodal_payload, build_openai_compatible_payload,
+        dashscope_connection_test_audio_base64, dashscope_multimodal_url,
+        extract_dashscope_multimodal_text, extract_openai_compatible_text,
+        first_openai_compatible_stream_text, is_dashscope_multimodal_provider,
+        push_openai_compatible_stream_line,
     },
     stats::{aggregate_usage_stats, UsageStats},
 };
@@ -138,7 +141,7 @@ pub fn select_provider_config_data(db: &AppDb, id: i64) -> Result<AppConfig, Str
 const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 验证供应商配置是否可用。
-/// OpenAI-compatible：最短 chat 请求；豆包：WebSocket 握手 + full client request。
+/// OpenAI-compatible：最短 chat 请求；DashScope：短静音音频；豆包：WebSocket 握手。
 pub fn test_provider_connection_data(provider: ProviderConfig) -> Result<String, String> {
     if !provider.has_complete_provider() {
         return Err("请先填写完整的供应商配置。".to_string());
@@ -155,6 +158,27 @@ pub fn test_provider_connection_data(provider: ProviderConfig) -> Result<String,
             extra_json: provider.extra_json.clone(),
         };
         return test_doubao_connection(&config);
+    }
+
+    if is_dashscope_multimodal_provider(&provider.kind, &provider.model) {
+        let api_key = resolve_api_key(&provider.api_key_ref)?;
+        let audio = dashscope_connection_test_audio_base64();
+        let payload = build_dashscope_multimodal_payload(&provider.model, &audio, "audio/wav");
+        let started_at = std::time::Instant::now();
+        let response = send_dashscope_multimodal_request(
+            &provider.base_url,
+            &api_key,
+            &payload,
+            PROVIDER_TEST_TIMEOUT,
+        )
+        .map_err(|error| format!("连接失败：{error}"))?;
+        let status = response.status();
+        let elapsed_ms = started_at.elapsed().as_millis();
+        if status.is_success() {
+            return Ok(format!("连接成功（{elapsed_ms}ms）"));
+        }
+        let body = response.text().unwrap_or_default();
+        return Err(provider_http_error(status, &body));
     }
 
     let api_key = resolve_api_key(&provider.api_key_ref)?;
@@ -190,12 +214,16 @@ pub fn test_provider_connection_data(provider: ProviderConfig) -> Result<String,
         return Ok(format!("连接成功（{elapsed_ms}ms）"));
     }
     let body = response.text().unwrap_or_default();
+    Err(provider_http_error(status, &body))
+}
+
+fn provider_http_error(status: reqwest::StatusCode, body: &str) -> String {
     let summary = body.chars().take(300).collect::<String>();
-    Err(match status.as_u16() {
+    match status.as_u16() {
         401 | 403 => format!("鉴权失败（HTTP {status}），请检查 API Key。{summary}"),
         404 => format!("接口或模型不存在（HTTP {status}），请检查 URL 和模型名。{summary}"),
         _ => format!("请求失败（HTTP {status}）：{summary}"),
-    })
+    }
 }
 
 pub fn delete_provider_config_data(db: &AppDb, id: i64) -> Result<Vec<ProviderConfig>, String> {
@@ -642,6 +670,17 @@ where
             hotwords.len()
         );
         recognize_doubao_with_transcript(&config, &input, &hotwords, on_transcript)
+    } else if is_dashscope_multimodal_provider(&config.kind, &config.model) {
+        eprintln!(
+            "[saynow] recognize_audio building DashScope multimodal request; provider={} model={} mime={}",
+            config.provider, config.model, input.mime_type
+        );
+        let payload = build_dashscope_multimodal_payload(
+            &config.model,
+            &input.audio_base64,
+            &input.mime_type,
+        );
+        call_dashscope_multimodal_with_transcript(&config, payload, on_transcript)
     } else {
         let styles = db.list_style_prompts().map_err(|error| error.to_string())?;
         let records = db.list_records(10).map_err(|error| error.to_string())?;
@@ -686,6 +725,54 @@ where
         result.is_ok()
     ));
     result
+}
+
+fn send_dashscope_multimodal_request(
+    base_url: &str,
+    api_key: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Result<reqwest::blocking::Response, String> {
+    let url = dashscope_multimodal_url(base_url);
+    eprintln!("[saynow] sending DashScope multimodal request; url={url}");
+    http_client()?
+        .post(url)
+        .timeout(timeout)
+        .bearer_auth(api_key)
+        .header("X-DashScope-SSE", "disable")
+        .json(payload)
+        .send()
+        .map_err(|error| format!("DashScope 请求失败：{error}"))
+}
+
+fn call_dashscope_multimodal_with_transcript<F>(
+    config: &crate::db::AppConfig,
+    payload: Value,
+    mut on_transcript: F,
+) -> Result<String, String>
+where
+    F: FnMut(String),
+{
+    let api_key = resolve_api_key(&config.api_key_ref)?;
+    let response = send_dashscope_multimodal_request(
+        &config.base_url,
+        &api_key,
+        &payload,
+        RECOGNITION_TIMEOUT,
+    )?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("读取 DashScope 识别响应失败：{error}"))?;
+    if !status.is_success() {
+        return Err(format!("DashScope 识别请求返回 {status}：{body}"));
+    }
+    let json: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("DashScope 识别响应不是有效 JSON：{error}"))?;
+    let text = extract_dashscope_multimodal_text(&json)
+        .ok_or_else(|| "DashScope 识别响应中没有可用文本。".to_string())?;
+    on_transcript(text.clone());
+    Ok(text)
 }
 
 fn apply_text_preferences(text: String, preferences: &PersonalizationPreferences) -> String {

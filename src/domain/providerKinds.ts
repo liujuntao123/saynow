@@ -1,7 +1,10 @@
 import type { DoubaoAuthMode, ProviderConfig, ProviderKind } from '../types';
 
 export const KIND_OPENAI_COMPATIBLE: ProviderKind = 'openai-compatible';
+export const KIND_DASHSCOPE_MULTIMODAL: ProviderKind = 'dashscope-multimodal';
 export const KIND_DOUBAO_WS: ProviderKind = 'doubao-ws';
+
+export const QWEN_AUDIO_ASR_MODEL = 'qwen-audio-3.0-asr-flash';
 
 export const DEFAULT_DOUBAO_ENDPOINT =
   'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async';
@@ -46,6 +49,16 @@ export function isDoubaoProvider(
   }
   const name = (provider ?? '').toLowerCase();
   return name.includes('doubao') || name.includes('豆包');
+}
+
+export function isDashScopeMultimodalProvider(
+  kind?: string | null,
+  model?: string | null,
+): boolean {
+  if ((kind ?? '').trim().toLowerCase() === KIND_DASHSCOPE_MULTIMODAL) {
+    return true;
+  }
+  return (model ?? '').trim().toLowerCase() === QWEN_AUDIO_ASR_MODEL;
 }
 
 export function parseDoubaoExtra(raw?: string | null): DoubaoExtra {

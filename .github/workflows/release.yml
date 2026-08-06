@@ -53,9 +53,9 @@ jobs:
 
             ## Change Log
 
-            - 新增豆包流式 ASR（WebSocket）供应商：录完后按 16k mono PCM 分包识别，支持新旧控制台鉴权。
-            - 配置页增加豆包 ASR 模板、Resource Id 与凭证字段；词库启用词映射为热词。
-            - 快捷键改为预设选择（LCtrl+Meta / RAlt），并保留热键相关交互修复。
+            - 新增 Qwen Audio ASR 供应商，支持 `qwen-audio-3.0-asr-flash` 的 DashScope 多模态接口。
+            - 自动兼容 Workspace 的 `/api/v1` 与 `/compatible-mode/v1` 基础地址，并解析模型专用响应结构。
+            - 热键按住确认延迟由 300ms 缩短为 200ms。
           generateReleaseNotes: false
           releaseDraft: false
           prerelease: false

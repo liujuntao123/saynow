@@ -69,8 +69,8 @@ export interface LearningRule {
   risk: string;
 }
 
-/** openai-compatible chat ASR / doubao websocket ASR */
-export type ProviderKind = 'openai-compatible' | 'doubao-ws';
+/** openai-compatible chat ASR / DashScope multimodal ASR / doubao websocket ASR */
+export type ProviderKind = 'openai-compatible' | 'dashscope-multimodal' | 'doubao-ws';
 
 /** 豆包鉴权：旧控制台 AppKey+AccessKey，新控制台仅 API Key */
 export type DoubaoAuthMode = 'legacy' | 'apiKey';

@@ -162,7 +162,7 @@ mod platform_impl {
     const HOTKEY_MONITOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(300);
     const HOTKEY_HOOK_REFRESH_INTERVAL: Duration = Duration::from_secs(900);
     const HOTKEY_AUTO_RELEASE_MISSES: u8 = 8;
-    const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(300);
+    const HOTKEY_HOLD_DELAY: Duration = Duration::from_millis(200);
     const CLIPBOARD_OPEN_RETRIES: usize = 8;
     const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(20);
     const INPUT_TARGET_SETTLE_DELAY: Duration = Duration::from_millis(80);
@@ -1583,11 +1583,11 @@ mod platform_impl {
             ));
             assert!(!hotkey_hold_confirmed(
                 started_at,
-                started_at + Duration::from_millis(299)
+                started_at + Duration::from_millis(199)
             ));
             assert!(hotkey_hold_confirmed(
                 started_at,
-                started_at + Duration::from_millis(300)
+                started_at + Duration::from_millis(200)
             ));
         }
 

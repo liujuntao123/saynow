@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isDoubaoProvider,
+  isDashScopeMultimodalProvider,
   isProviderFormComplete,
   parseDoubaoExtra,
   providerSubtitle,
@@ -12,6 +13,12 @@ describe('providerKinds', () => {
     expect(isDoubaoProvider('doubao-ws', 'x')).toBe(true);
     expect(isDoubaoProvider('', 'Doubao ASR')).toBe(true);
     expect(isDoubaoProvider('openai-compatible', 'Qwen')).toBe(false);
+  });
+
+  it('detects the DashScope multimodal provider by kind or model', () => {
+    expect(isDashScopeMultimodalProvider('dashscope-multimodal', '')).toBe(true);
+    expect(isDashScopeMultimodalProvider('', 'qwen-audio-3.0-asr-flash')).toBe(true);
+    expect(isDashScopeMultimodalProvider('openai-compatible', 'qwen3.5-omni-plus')).toBe(false);
   });
 
   it('roundtrips doubao extra json', () => {

@@ -14,8 +14,11 @@ import {
   DEFAULT_DOUBAO_ENDPOINT,
   DEFAULT_DOUBAO_RESOURCE_ID,
   DOUBAO_RESOURCE_OPTIONS,
+  KIND_DASHSCOPE_MULTIMODAL,
   KIND_DOUBAO_WS,
   KIND_OPENAI_COMPATIBLE,
+  QWEN_AUDIO_ASR_MODEL,
+  isDashScopeMultimodalProvider,
   isDoubaoProvider,
   isProviderFormComplete,
   parseDoubaoExtra,
@@ -87,6 +90,14 @@ const templates = [
     kind: KIND_OPENAI_COMPATIBLE,
   },
   {
+    id: 'qwen-audio-asr',
+    label: 'Qwen Audio ASR',
+    provider: 'Qwen Audio ASR',
+    baseUrl: '',
+    model: QWEN_AUDIO_ASR_MODEL,
+    kind: KIND_DASHSCOPE_MULTIMODAL,
+  },
+  {
     id: 'doubao',
     label: '豆包 ASR',
     provider: 'Doubao ASR',
@@ -98,6 +109,9 @@ const templates = [
 
 const activeProvider = computed(() => props.providers.find((provider) => provider.enabled) ?? null);
 const isDoubaoForm = computed(() => isDoubaoProvider(providerForm.kind, providerForm.provider));
+const isDashScopeForm = computed(() =>
+  isDashScopeMultimodalProvider(providerForm.kind, providerForm.model),
+);
 const providerFormComplete = computed(() =>
   isProviderFormComplete({
     ...providerForm,
@@ -132,7 +146,13 @@ watch(() => props.providers, (providers) => {
 
 function applyProviderToForm(provider: ProviderConfig) {
   Object.assign(providerForm, emptyProvider(), provider, {
-    kind: provider.kind || (isDoubaoProvider(provider.kind, provider.provider) ? KIND_DOUBAO_WS : KIND_OPENAI_COMPATIBLE),
+    kind: provider.kind || (
+      isDoubaoProvider(provider.kind, provider.provider)
+        ? KIND_DOUBAO_WS
+        : isDashScopeMultimodalProvider(provider.kind, provider.model)
+          ? KIND_DASHSCOPE_MULTIMODAL
+          : KIND_OPENAI_COMPATIBLE
+    ),
     extraJson: provider.extraJson || '{}',
   });
   const extra = parseDoubaoExtra(provider.extraJson);
@@ -178,6 +198,7 @@ function isTemplateApplied(template: (typeof templates)[number]) {
 
 function buildProviderPayload(): ProviderConfig {
   const isDoubao = isDoubaoProvider(providerForm.kind, providerForm.provider);
+  const isDashScope = isDashScopeMultimodalProvider(providerForm.kind, providerForm.model);
   return {
     ...providerForm,
     provider: providerForm.provider.trim(),
@@ -189,7 +210,11 @@ function buildProviderPayload(): ProviderConfig {
       : providerForm.model.trim(),
     apiKeyRef: providerForm.apiKeyRef.trim(),
     enabled: providerForm.enabled || !props.providers.length,
-    kind: isDoubao ? KIND_DOUBAO_WS : KIND_OPENAI_COMPATIBLE,
+    kind: isDoubao
+      ? KIND_DOUBAO_WS
+      : isDashScope
+        ? KIND_DASHSCOPE_MULTIMODAL
+        : KIND_OPENAI_COMPATIBLE,
     extraJson: isDoubao
       ? serializeDoubaoExtra({
           authMode: doubaoAuthMode.value,
@@ -361,7 +386,13 @@ function saveHotkey() {
                 模型 <input v-model="providerForm.model" placeholder="输入模型" />
               </label>
               <label class="field-span-2">
-                URL <input v-model="providerForm.baseUrl" placeholder="https://api..." />
+                URL
+                <input
+                  v-model="providerForm.baseUrl"
+                  :placeholder="isDashScopeForm
+                    ? 'https://你的WorkspaceId.cn-beijing.maas.aliyuncs.com/api/v1'
+                    : 'https://api...'"
+                />
               </label>
               <label class="field-span-2">
                 API Key <input v-model="providerForm.apiKeyRef" type="password" placeholder="粘贴您的 API Key" />

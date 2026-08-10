@@ -7,19 +7,14 @@ import { writeRuntimeLog } from './api/tauri';
 
 type OverlayState = 'recording' | 'processing' | 'error' | 'correctionPrompt' | 'correctionEdit';
 
-const MAX_RECORDING_SECONDS = 120;
-const RECORDING_WARNING_SECONDS = 110;
-
 const state = ref<OverlayState>('recording');
 const transcript = ref('');
-const recordingSeconds = ref(0);
 const correctionRecordId = ref<number | null>(null);
 const correctionRawText = ref('');
 const correctionDraft = ref('');
 let unlistenState: (() => void) | undefined;
 let unlistenTranscript: (() => void) | undefined;
 let unlistenReset: (() => void) | undefined;
-let recordingTimer: ReturnType<typeof window.setInterval> | null = null;
 
 const label = computed(() => {
   if (state.value === 'correctionPrompt') return '已输入';
@@ -29,22 +24,13 @@ const label = computed(() => {
   return '正在录音';
 });
 
-const recordingClock = computed(() => {
-  const minutes = Math.floor(recordingSeconds.value / 60);
-  const seconds = recordingSeconds.value % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-});
-const nearRecordingLimit = computed(
-  () => state.value === 'recording' && recordingSeconds.value >= RECORDING_WARNING_SECONDS,
-);
-
 const transcriptPreview = computed(() => transcript.value.trim());
 const correctionPreview = computed(() => correctionRawText.value.trim());
 const stripText = computed(() => {
   if (state.value === 'correctionPrompt') return correctionPreview.value || label.value;
   if (state.value === 'error') return '识别失败，可点击重试';
-  // 录音 / 识别中不展示状态文案，仅在有转写内容时显示
-  return transcriptPreview.value;
+  // 录音 / 识别中不展示转写文本，识别完成后由纠错/编辑状态展示
+  return '';
 });
 const ariaLabel = computed(() => {
   const preview = state.value.startsWith('correction') ? correctionPreview.value : transcriptPreview.value;
@@ -63,20 +49,6 @@ function formatLogDetails(details: unknown) {
   } catch {
     return String(details);
   }
-}
-
-function startRecordingClock() {
-  stopRecordingClock();
-  recordingSeconds.value = 0;
-  recordingTimer = window.setInterval(() => {
-    recordingSeconds.value = Math.min(recordingSeconds.value + 1, MAX_RECORDING_SECONDS);
-  }, 1000);
-}
-
-function stopRecordingClock() {
-  if (!recordingTimer) return;
-  window.clearInterval(recordingTimer);
-  recordingTimer = null;
 }
 
 function resetCorrection() {
@@ -151,15 +123,13 @@ onMounted(async () => {
       mountedMs: Math.round(performance.now() - mountedAt),
     });
     state.value = event.payload.state;
-    if (event.payload.state === 'recording') {
-      startRecordingClock();
-    } else {
-      stopRecordingClock();
-    }
     if (event.payload.state === 'correctionPrompt') {
       correctionRecordId.value = event.payload.recordId ?? null;
       correctionRawText.value = event.payload.text ?? '';
       correctionDraft.value = correctionRawText.value;
+      transcript.value = '';
+    }
+    if (event.payload.state === 'processing') {
       transcript.value = '';
     }
     if (event.payload.state === 'recording' || event.payload.state === 'processing' || event.payload.state === 'error') {
@@ -171,14 +141,14 @@ onMounted(async () => {
       done: Boolean(event.payload.done),
       textLength: event.payload.text?.length ?? 0,
     });
+    // 流式转写只用于识别过程推进，不在“正在识别”状态展示；识别完成后由纠错/编辑状态展示最终文本
+    if (state.value === 'processing') return;
     transcript.value = event.payload.text ?? '';
   });
   unlistenReset = await currentWindow.listen('recorder-reset', () => {
     debugLog('reset event received');
     state.value = 'recording';
     transcript.value = '';
-    stopRecordingClock();
-    recordingSeconds.value = 0;
     resetCorrection();
   });
 });
@@ -186,7 +156,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.documentElement.classList.remove('recorder-root');
   document.body.classList.remove('recorder-body');
-  stopRecordingClock();
   unlistenState?.();
   unlistenTranscript?.();
   unlistenReset?.();
@@ -204,16 +173,10 @@ onBeforeUnmount(() => {
   >
     <div v-if="state !== 'correctionEdit'" class="hud-strip">
       <div class="hud-orb">
-        <div class="orb-halo"></div>
-        <div class="orb-ring"></div>
         <div class="orb-icon-wrapper">
           <AppIcon :name="state === 'processing' ? 'activity' : state === 'correctionPrompt' ? 'text' : 'mic'" class="orb-icon" />
         </div>
       </div>
-
-      <span v-if="state === 'recording'" class="recording-clock" :class="{ warning: nearRecordingLimit }">
-        {{ recordingClock }}
-      </span>
 
       <div v-if="stripText" class="strip-content">
         <span class="strip-text">{{ stripText }}</span>
@@ -286,81 +249,33 @@ onBeforeUnmount(() => {
   min-height: 40px;
   align-items: center;
   gap: 8px;
-  overflow: hidden;
-  border-radius: 20px;
-  /* 中性描边 + 投影：避免浮条在白色应用背景上"隐形" */
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  padding: 4px 5px;
-  background: #ffffff;
-  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.16);
-}
-
-.recording-clock {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: #0f8f83;
-  background: rgba(15, 143, 131, 0.08);
-  border-radius: 8px;
-  padding: 3px 7px;
-}
-
-.recording-clock.warning {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
-  animation: clock-blink 1s step-end infinite;
-}
-
-@keyframes clock-blink {
-  50% { opacity: 0.45; }
-}
-
-.hud-orb {
-  position: relative;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: #f8fbfa;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.12);
-
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2;
-  flex-shrink: 0;
   overflow: visible;
+  border-radius: 20px;
+  padding: 4px 5px;
+  background: #f8fbfa;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.05);
   transition:
     background 0.4s ease,
     box-shadow 0.4s ease,
     transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.orb-halo {
-  position: absolute;
-  inset: 0;
+/* 圆球即整个条带：图标直接作为球的内容，背景只保留一层 */
+.hud-orb {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  opacity: 1;
-  transition: all 0.5s ease;
-}
-
-.orb-ring {
-  position: absolute;
-  inset: -1px;
-  border-radius: 50%;
-  pointer-events: none;
-  opacity: 0;
-  transition: all 0.4s ease;
-}
-
-.orb-ring::after {
-  position: absolute;
-  content: '';
-  inset: 0;
-  border-radius: inherit;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: visible;
 }
 
 .orb-icon-wrapper {
@@ -375,64 +290,45 @@ onBeforeUnmount(() => {
   transition: color 0.4s ease;
 }
 
-.morph-hud.recording .orb-halo {
-  background: #d7faf4;
-  animation: orb-breathe 1.7s ease-in-out infinite alternate;
+/* 录音：整体是一个呼吸的薄荷圆球/胶囊 */
+.morph-hud.recording .hud-strip {
+  background: #e6fffa;
+  animation: recording-breathe 1.15s ease-in-out infinite;
 }
-.morph-hud.recording .hud-orb {
-  background: #effdf9;
-  box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.16);
-  animation: orb-recording-pop 1.4s ease-in-out infinite;
+.morph-hud.recording:not(.has-transcript):not(.has-correction) .hud-strip {
+  animation:
+    recording-breathe 1.15s ease-in-out infinite,
+    orb-recording-pop 1.15s ease-in-out infinite;
 }
 .morph-hud.recording .orb-icon {
-  color: #0f8f83;
-  animation: mic-listening 1.2s ease-in-out infinite;
-}
-.morph-hud.recording .orb-ring {
-  opacity: 1;
-  border: 1.5px solid rgba(15, 143, 131, 0.4);
-  animation: ring-ripple 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
-}
-.morph-hud.recording .orb-ring::after {
-  border: 1px solid rgba(15, 143, 131, 0.24);
-  animation: ring-ripple 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) 0.45s infinite;
+  color: #087f75;
+  animation: mic-listening 1.15s ease-in-out infinite;
 }
 
-.morph-hud.processing .orb-halo {
+/* 识别：琥珀色胶囊，呼吸式加载，无边框旋转 */
+.morph-hud.processing .hud-strip {
   background: #fff3d6;
-  opacity: 1;
+  animation: processing-breathe 1.15s ease-in-out infinite;
 }
 .morph-hud.processing .orb-icon {
   color: #d97706;
 }
 .morph-hud.processing .orb-icon-wrapper {
-  transform: scale(0.85);
-}
-.morph-hud.processing .orb-ring {
-  opacity: 1;
-  border: 2px solid transparent;
-  border-top-color: #f59e0b;
-  border-right-color: rgba(245, 158, 11, 0.3);
-  animation: ring-spin 0.8s cubic-bezier(0.5, 0.1, 0.5, 0.9) infinite;
+  animation: processing-icon-pulse 1.15s ease-in-out infinite;
 }
 
-.morph-hud.error .orb-halo {
+/* 失败：红色胶囊 */
+.morph-hud.error .hud-strip {
   background: #fee2e2;
-  opacity: 1;
 }
 .morph-hud.error .orb-icon {
   color: #ef4444;
   animation: icon-shake 0.4s ease both;
 }
 
-.morph-hud.correctionPrompt .orb-halo {
+/* 纠错：蓝色胶囊 */
+.morph-hud.correctionPrompt .hud-strip {
   background: #e5efff;
-  opacity: 1;
-}
-
-.morph-hud.correctionPrompt .hud-orb {
-  background: #f8fbff;
-  box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.14);
 }
 
 .morph-hud.correctionPrompt .orb-icon {
@@ -493,11 +389,6 @@ onBeforeUnmount(() => {
   background-clip: text;
   animation: text-shimmer 1.5s linear infinite;
   text-shadow: none;
-}
-
-@keyframes orb-breathe {
-  0% { transform: scale(0.96); }
-  100% { transform: scale(1.06); }
 }
 
 .correction-actions {
@@ -603,27 +494,30 @@ onBeforeUnmount(() => {
 @keyframes orb-recording-pop {
   0%, 100% {
     transform: scale(1);
-    box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.16);
   }
   50% {
-    transform: scale(1.04);
-    box-shadow: inset 0 0 0 1px rgba(15, 143, 131, 0.24);
+    transform: scale(1.08);
   }
+}
+
+@keyframes recording-breathe {
+  0%, 100% { background-color: #e6fffa; }
+  50% { background-color: #d2f6ea; }
+}
+
+@keyframes processing-breathe {
+  0%, 100% { background-color: #fff3d6; }
+  50% { background-color: #ffe3ab; }
+}
+
+@keyframes processing-icon-pulse {
+  0%, 100% { transform: scale(0.82); }
+  50% { transform: scale(1); }
 }
 
 @keyframes mic-listening {
   0%, 100% { transform: translateY(0) scale(1); }
-  45% { transform: translateY(-1px) scale(1.08); }
-}
-
-@keyframes ring-ripple {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.34); opacity: 0; }
-}
-
-@keyframes ring-spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  45% { transform: translateY(-1px) scale(1.16); }
 }
 
 @keyframes text-shimmer {

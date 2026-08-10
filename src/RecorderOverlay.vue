@@ -24,12 +24,14 @@ const label = computed(() => {
   return '正在录音';
 });
 
+const isLoading = computed(() => state.value === 'recording' || state.value === 'processing');
+const loadingDots = [0, 1, 2, 3, 4];
 const transcriptPreview = computed(() => transcript.value.trim());
 const correctionPreview = computed(() => correctionRawText.value.trim());
 const stripText = computed(() => {
   if (state.value === 'correctionPrompt') return correctionPreview.value || label.value;
   if (state.value === 'error') return '识别失败，可点击重试';
-  // 录音 / 识别中不展示转写文本，识别完成后由纠错/编辑状态展示
+  // 录音 / 识别中只展示 loading 点，识别完成后由纠错/编辑状态展示最终文本
   return '';
 });
 const ariaLabel = computed(() => {
@@ -172,10 +174,8 @@ onBeforeUnmount(() => {
     @mouseleave="notifyHover(false)"
   >
     <div v-if="state !== 'correctionEdit'" class="hud-strip">
-      <div class="hud-orb">
-        <div class="orb-icon-wrapper">
-          <AppIcon :name="state === 'processing' ? 'activity' : state === 'correctionPrompt' ? 'text' : 'mic'" class="orb-icon" />
-        </div>
+      <div v-if="isLoading" class="loading-dots" aria-hidden="true">
+        <span v-for="dotIndex in loadingDots" :key="dotIndex" class="loading-dot"></span>
       </div>
 
       <div v-if="stripText" class="strip-content">
@@ -252,87 +252,75 @@ onBeforeUnmount(() => {
   overflow: visible;
   border-radius: 20px;
   padding: 4px 5px;
-  background: #f8fbfa;
+  background: #e5efff;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.55),
     inset 0 -1px 0 rgba(15, 23, 42, 0.05);
   transition:
     background 0.4s ease,
     box-shadow 0.4s ease,
-    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+    padding 0.4s ease,
+    min-width 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* 圆球即整个条带：图标直接作为球的内容，背景只保留一层 */
-.hud-orb {
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+/* 录音与识别合并为同一个阶段：窄条 + 动态 loading 点 */
+.morph-hud.recording .hud-strip {
+  min-width: 150px;
+  max-width: 150px;
+  justify-content: center;
+}
+
+.morph-hud.processing .hud-strip {
+  min-width: 150px;
+  max-width: 150px;
+  justify-content: center;
+}
+
+.loading-dots {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  overflow: visible;
+  gap: 6px;
+  height: 12px;
 }
 
-.orb-icon-wrapper {
-  position: relative;
-  z-index: 10;
-  display: flex;
-  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+.loading-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #1d4ed8;
+  opacity: 0.35;
+  animation: loading-dot-wave 1.2s ease-in-out infinite;
 }
 
-.orb-icon {
-  font-size: 13px;
-  transition: color 0.4s ease;
+.loading-dot:nth-child(2) {
+  animation-delay: 120ms;
 }
 
-/* 录音：整体是一个呼吸的薄荷圆球/胶囊 */
-.morph-hud.recording .hud-strip {
-  background: #e6fffa;
-  animation: recording-breathe 1.15s ease-in-out infinite;
-}
-.morph-hud.recording:not(.has-transcript):not(.has-correction) .hud-strip {
-  animation:
-    recording-breathe 1.15s ease-in-out infinite,
-    orb-recording-pop 1.15s ease-in-out infinite;
-}
-.morph-hud.recording .orb-icon {
-  color: #087f75;
-  animation: mic-listening 1.15s ease-in-out infinite;
+.loading-dot:nth-child(3) {
+  animation-delay: 240ms;
 }
 
-/* 识别：琥珀色胶囊，呼吸式加载，无边框旋转 */
-.morph-hud.processing .hud-strip {
-  background: #fff3d6;
-  animation: processing-breathe 1.15s ease-in-out infinite;
+.loading-dot:nth-child(4) {
+  animation-delay: 360ms;
 }
-.morph-hud.processing .orb-icon {
-  color: #d97706;
-}
-.morph-hud.processing .orb-icon-wrapper {
-  animation: processing-icon-pulse 1.15s ease-in-out infinite;
+
+.loading-dot:nth-child(5) {
+  animation-delay: 480ms;
 }
 
 /* 失败：红色胶囊 */
 .morph-hud.error .hud-strip {
+  min-width: 0;
+  max-width: min(640px, calc(100vw - 10px));
   background: #fee2e2;
-}
-.morph-hud.error .orb-icon {
-  color: #ef4444;
-  animation: icon-shake 0.4s ease both;
 }
 
 /* 纠错：蓝色胶囊 */
 .morph-hud.correctionPrompt .hud-strip {
   background: #e5efff;
-}
-
-.morph-hud.correctionPrompt .orb-icon {
-  color: #1d4ed8;
+  padding-left: 16px;
 }
 
 .morph-hud.has-transcript .hud-strip {
@@ -351,6 +339,7 @@ onBeforeUnmount(() => {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
+  animation: strip-content-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .strip-text {
@@ -399,6 +388,7 @@ onBeforeUnmount(() => {
   margin-left: 2px;
   padding-left: 8px;
   border-left: 1px solid rgba(15, 143, 131, 0.12);
+  animation: strip-content-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .correction-button,
@@ -491,33 +481,26 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 18px rgba(15, 143, 131, 0.18);
 }
 
-@keyframes orb-recording-pop {
+@keyframes loading-dot-wave {
   0%, 100% {
-    transform: scale(1);
+    opacity: 0.35;
+    transform: translateY(0) scale(0.85);
   }
-  50% {
-    transform: scale(1.08);
+  40% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1);
   }
 }
 
-@keyframes recording-breathe {
-  0%, 100% { background-color: #e6fffa; }
-  50% { background-color: #d2f6ea; }
-}
-
-@keyframes processing-breathe {
-  0%, 100% { background-color: #fff3d6; }
-  50% { background-color: #ffe3ab; }
-}
-
-@keyframes processing-icon-pulse {
-  0%, 100% { transform: scale(0.82); }
-  50% { transform: scale(1); }
-}
-
-@keyframes mic-listening {
-  0%, 100% { transform: translateY(0) scale(1); }
-  45% { transform: translateY(-1px) scale(1.16); }
+@keyframes strip-content-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 @keyframes text-shimmer {
@@ -527,11 +510,5 @@ onBeforeUnmount(() => {
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
-}
-
-@keyframes icon-shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-2px); }
-  75% { transform: translateX(2px); }
 }
 </style>

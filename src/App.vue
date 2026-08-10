@@ -81,7 +81,10 @@ const records = ref<RecognitionRecord[]>([]);
 const correctionRecords = ref<CorrectionRecord[]>([]);
 const vocabulary = ref<VocabularyItem[]>([]);
 const styles = ref<StylePrompt[]>([]);
-const personalizationPreferences = ref<PersonalizationPreferences>({ removeTrailingPeriod: false });
+const personalizationPreferences = ref<PersonalizationPreferences>({
+  removeTrailingPeriod: false,
+  showCorrectionStrip: false,
+});
 const learningEngineConfig = ref<LearningEngineConfig>({
   enabled: false,
   provider: '',
@@ -215,6 +218,7 @@ async function refreshAll() {
     vocabulary: vocabulary.value.length,
     styles: styles.value.length,
     removeTrailingPeriod: personalizationPreferences.value.removeTrailingPeriod,
+    showCorrectionStrip: personalizationPreferences.value.showCorrectionStrip,
     learningEngineEnabled: learningEngineConfig.value.enabled,
     learningRules: learningRules.value.length,
   });
@@ -414,7 +418,9 @@ async function finishRecording(session: RecordingSession) {
       await refreshRecognitionData();
       if (record.status === 'success' && record.text.trim()) {
         shouldScheduleLearning = true;
-        await showCorrectionPrompt(record);
+        if (personalizationPreferences.value.showCorrectionStrip) {
+          await showCorrectionPrompt(record);
+        }
       }
     }
   } catch (error) {
@@ -628,8 +634,12 @@ async function retryRecognition() {
     const record = await retryLastRecognition();
     await refreshRecognitionData();
     if (record.status === 'success' && record.text.trim()) {
-      await showCorrectionPrompt(record);
       scheduleLearningEngineRun();
+      if (personalizationPreferences.value.showCorrectionStrip) {
+        await showCorrectionPrompt(record);
+      } else {
+        await hideRecorderOverlay();
+      }
       return;
     }
     await hideRecorderOverlay();
@@ -1005,11 +1015,13 @@ onBeforeUnmount(() => {
       v-else-if="currentPage === 'config'"
       :config="config"
       :providers="providers"
+      :preferences="personalizationPreferences"
       :saving="saving"
       @save="persistConfig"
       @save-provider="persistProvider"
       @select-provider="activateProvider"
       @delete-provider="removeProvider"
+      @update-preferences="savePersonalizationPreferenceSettings"
     />
     <DataPage
       v-else-if="currentPage === 'data'"

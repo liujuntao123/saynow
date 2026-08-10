@@ -290,24 +290,23 @@ onBeforeUnmount(() => {
   height: 6px;
   border-radius: 999px;
   background: #1d4ed8;
-  opacity: 0.35;
-  animation: loading-dot-wave 1.2s ease-in-out infinite;
+  animation: loading-dot-march 1.2s linear infinite;
 }
 
 .loading-dot:nth-child(2) {
-  animation-delay: 120ms;
+  animation-delay: -120ms;
 }
 
 .loading-dot:nth-child(3) {
-  animation-delay: 240ms;
+  animation-delay: -240ms;
 }
 
 .loading-dot:nth-child(4) {
-  animation-delay: 360ms;
+  animation-delay: -360ms;
 }
 
 .loading-dot:nth-child(5) {
-  animation-delay: 480ms;
+  animation-delay: -480ms;
 }
 
 /* 失败：红色胶囊 */
@@ -481,14 +480,23 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 18px rgba(15, 143, 131, 0.18);
 }
 
-@keyframes loading-dot-wave {
-  0%, 100% {
-    opacity: 0.35;
-    transform: translateY(0) scale(0.85);
+/* 点队列从左到右循环前进：右侧淡出后从左侧重新进入 */
+@keyframes loading-dot-march {
+  0% {
+    opacity: 0;
+    transform: translateX(-36px) scale(0.9);
   }
-  40% {
+  12% {
     opacity: 1;
-    transform: translateY(-4px) scale(1);
+    transform: translateX(-30px) scale(1);
+  }
+  88% {
+    opacity: 1;
+    transform: translateX(30px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(36px) scale(0.9);
   }
 }
 

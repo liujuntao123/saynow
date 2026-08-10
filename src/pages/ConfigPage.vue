@@ -27,11 +27,12 @@ import {
 } from '../domain/providerKinds';
 import { testProviderConnection } from '../api/tauri';
 import { useToast } from '../composables/useToast';
-import type { AppConfig, DoubaoAuthMode, ProviderConfig } from '../types';
+import type { AppConfig, DoubaoAuthMode, PersonalizationPreferences, ProviderConfig } from '../types';
 
 const props = defineProps<{
   config: AppConfig | null;
   providers: ProviderConfig[];
+  preferences: PersonalizationPreferences;
   saving: boolean;
 }>();
 
@@ -40,6 +41,7 @@ const emit = defineEmits<{
   saveProvider: [provider: ProviderConfig];
   selectProvider: [id: number];
   deleteProvider: [id: number];
+  updatePreferences: [preferences: PersonalizationPreferences];
 }>();
 
 const toast = useToast();
@@ -255,6 +257,12 @@ async function testConnection() {
 function selectHotkey(value: HotkeyPresetValue) {
   hotkey.value = value;
 }
+function toggleCorrectionStrip() {
+  emit('updatePreferences', {
+    ...props.preferences,
+    showCorrectionStrip: !props.preferences.showCorrectionStrip,
+  });
+}
 function saveHotkey() {
   const provider = activeProvider.value;
   emit('save', {
@@ -465,6 +473,21 @@ function saveHotkey() {
             </div>
           </div>
         </UiPanel>
+
+        <UiPanel title="浮层显示" icon="text" class="overlay-panel custom-glass-panel">
+          <button
+            type="button"
+            class="feature-toggle-row"
+            :aria-pressed="preferences.showCorrectionStrip"
+            @click="toggleCorrectionStrip"
+          >
+            <span class="feature-toggle-copy">
+              <strong>显示文字编辑条</strong>
+              <em>识别完成后显示“已输入”条，可编辑或撤销。</em>
+            </span>
+            <span class="ios-switch" :class="{ on: preferences.showCorrectionStrip }"></span>
+          </button>
+        </UiPanel>
       </div>
     </section>
   </div>
@@ -552,6 +575,8 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .config-side-stack { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; }
 :deep(.hotkey-panel.custom-glass-panel) { padding: 18px; }
 :deep(.hotkey-panel.custom-glass-panel .ui-panel-header) { padding-bottom: 14px; margin-bottom: 18px; }
+:deep(.overlay-panel.custom-glass-panel) { padding: 18px; }
+:deep(.overlay-panel.custom-glass-panel .ui-panel-header) { padding-bottom: 14px; margin-bottom: 18px; }
 .hotkey-picker { display: flex; flex-direction: column; gap: 12px; }
 .hotkey-option {
   width: 100%; display: flex; align-items: flex-start; justify-content: flex-start; gap: 12px; padding: 14px;
@@ -577,4 +602,75 @@ label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-w
 .hotkey-hint { margin: 0; color: #8a9793; font-size: 11px; line-height: 1.5; }
 .hotkey-actions { display: flex; justify-content: flex-end; }
 .hotkey-actions .primary-button { gap: 6px; }
+
+/* 浮层显示开关 */
+.feature-toggle-row {
+  width: 100%;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  background: #fafafa;
+  border: 1px solid #f0f0f5;
+  border-radius: 14px;
+  text-align: left;
+}
+.feature-toggle-row:hover {
+  background: #fff;
+  border-color: #0f8f83;
+  box-shadow: 0 4px 16px rgba(15, 143, 131, 0.08);
+}
+.feature-toggle-row:focus-visible {
+  border-color: #0f8f83;
+  box-shadow: 0 0 0 3px rgba(15, 143, 131, 0.24);
+}
+.feature-toggle-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.feature-toggle-copy strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1d1d1f;
+  overflow-wrap: anywhere;
+}
+.feature-toggle-copy em {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #86868b;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+.ios-switch {
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: #e5e5ea;
+  position: relative;
+  transition: background 0.3s;
+  flex-shrink: 0;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.ios-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.ios-switch.on { background: #34c759; }
+.ios-switch.on::after { transform: translateX(20px); }
+button.ios-switch:focus-visible { box-shadow: 0 0 0 3px rgba(15, 143, 131, 0.24); }
 </style>

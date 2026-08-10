@@ -1854,12 +1854,36 @@ mod tests {
     }
 
     #[test]
+    fn personalization_preferences_default_hide_correction_strip() {
+        let db = AppDb::in_memory().unwrap();
+
+        let defaults = get_personalization_preferences_data(&db).unwrap();
+        assert!(!defaults.show_correction_strip);
+
+        let saved = save_personalization_preferences_data(
+            &db,
+            PersonalizationPreferences {
+                remove_trailing_period: true,
+                show_correction_strip: true,
+            },
+        )
+        .unwrap();
+        assert!(saved.show_correction_strip);
+
+        let loaded = get_personalization_preferences_data(&db).unwrap();
+        assert!(loaded.remove_trailing_period);
+        assert!(loaded.show_correction_strip);
+    }
+
+    #[test]
     fn text_preferences_remove_trailing_period_only_when_enabled() {
         let enabled = PersonalizationPreferences {
             remove_trailing_period: true,
+            show_correction_strip: false,
         };
         let disabled = PersonalizationPreferences {
             remove_trailing_period: false,
+            show_correction_strip: false,
         };
 
         assert_eq!(
@@ -1884,6 +1908,7 @@ mod tests {
     fn text_preferences_remove_horizontal_spaces_only_between_han_characters() {
         let preferences = PersonalizationPreferences {
             remove_trailing_period: false,
+            show_correction_strip: false,
         };
 
         assert_eq!(

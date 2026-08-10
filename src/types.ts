@@ -114,6 +114,8 @@ export interface StylePrompt {
 
 export interface PersonalizationPreferences {
   removeTrailingPeriod: boolean;
+  /** 识别后是否显示“已输入”文字编辑浮条，默认关闭。 */
+  showCorrectionStrip: boolean;
 }
 
 export interface LearningEngineConfig {

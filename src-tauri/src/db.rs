@@ -165,7 +165,8 @@ impl AppDb {
 
             CREATE TABLE IF NOT EXISTS personalization_preferences (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                remove_trailing_period INTEGER NOT NULL DEFAULT 0
+                remove_trailing_period INTEGER NOT NULL DEFAULT 0,
+                show_correction_strip INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS correction_records (
@@ -257,6 +258,12 @@ impl AppDb {
             "app_config",
             "extra_json",
             "extra_json TEXT NOT NULL DEFAULT '{}'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "personalization_preferences",
+            "show_correction_strip",
+            "show_correction_strip INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
     }
@@ -929,11 +936,12 @@ impl AppDb {
     pub fn get_personalization_preferences(&self) -> Result<PersonalizationPreferences> {
         let conn = self.conn.lock().expect("database mutex poisoned");
         let result = conn.query_row(
-            "SELECT remove_trailing_period FROM personalization_preferences WHERE id = 1",
+            "SELECT remove_trailing_period, show_correction_strip FROM personalization_preferences WHERE id = 1",
             [],
             |row| {
                 Ok(PersonalizationPreferences {
                     remove_trailing_period: row.get::<_, i64>(0)? == 1,
+                    show_correction_strip: row.get::<_, i64>(1)? == 1,
                 })
             },
         );
@@ -951,16 +959,16 @@ impl AppDb {
         let conn = self.conn.lock().expect("database mutex poisoned");
         conn.execute(
             r#"
-            INSERT INTO personalization_preferences (id, remove_trailing_period)
-            VALUES (1, ?1)
+            INSERT INTO personalization_preferences (id, remove_trailing_period, show_correction_strip)
+            VALUES (1, ?1, ?2)
             ON CONFLICT(id) DO UPDATE SET
-                remove_trailing_period = excluded.remove_trailing_period
+                remove_trailing_period = excluded.remove_trailing_period,
+                show_correction_strip = excluded.show_correction_strip
             "#,
-            [if preferences.remove_trailing_period {
-                1
-            } else {
-                0
-            }],
+            params![
+                if preferences.remove_trailing_period { 1 } else { 0 },
+                if preferences.show_correction_strip { 1 } else { 0 },
+            ],
         )?;
         Ok(())
     }

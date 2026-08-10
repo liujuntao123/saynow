@@ -88,12 +88,15 @@ pub struct StylePrompt {
 #[serde(rename_all = "camelCase")]
 pub struct PersonalizationPreferences {
     pub remove_trailing_period: bool,
+    /// 识别后是否显示“已输入”文字编辑浮条，默认关闭。
+    pub show_correction_strip: bool,
 }
 
 impl Default for PersonalizationPreferences {
     fn default() -> Self {
         Self {
             remove_trailing_period: false,
+            show_correction_strip: false,
         }
     }
 }

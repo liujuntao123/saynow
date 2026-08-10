@@ -37,7 +37,10 @@ const editingVocabularyId = ref<number | null>(null);
 const vocabularyAliasDraft = ref('');
 const styleForm = reactive<StylePrompt>({ id: 0, name: '', prompt: '', enabled: true });
 const selectedStyleId = ref<number | null>(null);
-const preferencesForm = reactive<PersonalizationPreferences>({ removeTrailingPeriod: false });
+const preferencesForm = reactive<PersonalizationPreferences>({
+  removeTrailingPeriod: false,
+  showCorrectionStrip: false,
+});
 const learningEngineForm = reactive<LearningEngineConfig>({
   enabled: false,
   provider: '',
